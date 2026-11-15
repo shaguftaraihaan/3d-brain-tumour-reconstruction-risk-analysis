@@ -232,6 +232,16 @@ def _glass_record_extra(structure) -> dict:
     }
 
 
+def mesh_glb_filename(name: str) -> str:
+    """Filesystem-safe ``.glb`` name. Display ``mesh_name`` may contain ``/`` (e.g. Arcuate/SLF)."""
+    safe = str(name).replace("/", "-").replace("\\", "-")
+    return f"{safe}.glb"
+
+
+def mesh_glb_path(out_dir, name: str) -> Path:
+    return Path(out_dir) / mesh_glb_filename(name)
+
+
 def _structure_record(name, mesh, mask, affine, color, source, proximity=None, extra=None):
     watertight, err = check_mesh(mesh, mask, affine)
     voxel_mm3 = float(np.asarray(mask).sum()) * abs(float(np.linalg.det(np.asarray(affine, dtype=np.float64)[:3, :3])))
@@ -245,7 +255,7 @@ def _structure_record(name, mesh, mask, affine, color, source, proximity=None, e
         "centroid_mm": centroid_mm(mask, affine),
         "source": source,
         "proximity": proximity,
-        "file": f"{name}.glb",
+        "file": mesh_glb_filename(name),
     }
     if extra:
         record.update(extra)
@@ -264,7 +274,7 @@ def _add_mesh(scene, out_dir, name, mesh, group=None):
     """Add a named node. ``group`` is the parent in ``scene.glb``."""
     ensure_scene_group(scene, group)
     scene.add_geometry(mesh, geom_name=name, node_name=name, parent_node_name=group)
-    mesh.export(out_dir / f"{name}.glb")
+    mesh.export(mesh_glb_path(out_dir, name))
 
 
 def _find_synthseg(case_dir: Path | None, explicit):
@@ -324,7 +334,7 @@ def _record_mesh(scene, out_dir, structures, exported, spec, mesh, mask, affine,
 def _remove_structure(scene, out_dir, structures, exported, name):
     if name in scene.geometry:
         scene.delete_geometry(name)
-    path = out_dir / f"{name}.glb"
+    path = mesh_glb_path(out_dir, name)
     if path.is_file():
         path.unlink()
     structures.pop(name, None)
@@ -1005,8 +1015,9 @@ def rebuild_glass_meshes(out_dir):
     manifest["blood_products_note"] = BLOOD_NOTE if BLOOD_MESH in structures else None
 
     for name, entry in manifest.get("structures", {}).items():
-        if entry.get("source") == "atlas-estimated" and (out_dir / f"{name}.glb").is_file():
-            mesh = trimesh.load(out_dir / f"{name}.glb", force="mesh")
+        path = mesh_glb_path(out_dir, name)
+        if entry.get("source") == "atlas-estimated" and path.is_file():
+            mesh = trimesh.load(path, force="mesh")
             spec = get(name)
             scene_mesh = mesh if isinstance(mesh, trimesh.Trimesh) else None
             if scene_mesh is None:

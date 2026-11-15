@@ -52,6 +52,12 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     def viewer_page():
         return send_file(Path(app.static_folder) / "index.html")
 
+    @app.get("/api/catalog")
+    def catalog():
+        from recon.labels import catalog_payload
+
+        return jsonify(catalog_payload())
+
     @app.errorhandler(FileNotFoundError)
     def missing(exc):
         return jsonify({"error": str(exc)}), 404

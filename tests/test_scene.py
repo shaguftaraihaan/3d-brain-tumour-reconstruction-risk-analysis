@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from recon.postprocess import PostConfig
-from recon.scene import SCENE_COLORS, build_scene, tract_color
+from recon.scene import SCENE_COLORS, build_scene, mesh_glb_filename, mesh_glb_path, tract_color
 from recon.tracts import AtlasTract
 
 
@@ -105,7 +105,7 @@ def test_build_scene_exports_named_nodes_and_original_space():
         assert (out / "scene.glb").is_file()
         assert (out / "pred_seg.nii.gz").is_file()
         for name in ("edema", "necrosis", "enhancing", "Left Cortex", "Right Cortex", "Brainstem", "Left Corticospinal Tract"):
-            assert (out / f"{name}.glb").is_file()
+            assert mesh_glb_path(out, name).is_file()
             assert name in manifest["structures"]
         assert "brain" not in manifest["structures"]
         assert "Frontal Lobe" not in manifest["structures"]
@@ -465,6 +465,23 @@ def test_tumor_location_ignores_labels_only_inside_the_tumor():
     assert summary["WT"] == []
 
 
+def test_mesh_glb_filename_sanitizes_slash_for_windows():
+    name = "Left Arcuate Fasciculus / SLF"
+    assert mesh_glb_filename(name) == "Left Arcuate Fasciculus - SLF.glb"
+    assert "/" not in mesh_glb_filename(name)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        mesh = trimesh.Trimesh(vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]], faces=[[0, 1, 2]], process=False)
+        from recon.scene import _add_mesh
+
+        scene = trimesh.Scene()
+        _add_mesh(scene, root, name, mesh, "Tracts")
+        path = mesh_glb_path(root, name)
+        assert path.is_file()
+        assert path.name == "Left Arcuate Fasciculus - SLF.glb"
+        assert name in scene.geometry
+
+
 if __name__ == "__main__":
     test_build_scene_exports_named_nodes_and_original_space()
     test_anatomy_is_built_before_the_tumor_and_overlap_is_remeshed()
@@ -474,4 +491,5 @@ if __name__ == "__main__":
     test_anatomy_failure_keeps_tumor_and_warns()
     test_anatomy_cache_skips_synthseg_on_reopen()
     test_scene_is_up_to_date_requires_tissue_or_warning()
+    test_mesh_glb_filename_sanitizes_slash_for_windows()
     print("scene ok")

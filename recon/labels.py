@@ -70,6 +70,11 @@ class Structure:
     key: str
     opacity: float
     in_legend: bool = True
+    atlas_rgb: tuple[int, int, int] | None = None
+
+    def __post_init__(self):
+        if self.atlas_rgb is None:
+            object.__setattr__(self, "atlas_rgb", tuple(int(channel) for channel in self.rgb))
 
     def rgba(self) -> tuple[int, int, int, int]:
         return _pack(self.rgb, self.opacity)
@@ -81,10 +86,46 @@ ANATOMY_BY_ID: dict[int, Structure] = {}
 TUMOR_BY_ID: dict[int, Structure] = {}
 STRUCTURES: list[Structure] = []
 
+# Colour-blind-friendly atlas palette (Okabe–Ito inspired). Keyed by legend_name.
+# Left uses the listed RGB; right is a lighter tint of the same hue.
+ATLAS_COLORS: dict[str, tuple[int, int, int]] = {
+    "Thalamus": (17, 119, 51),
+    "Caudate": (51, 187, 238),
+    "Putamen": (238, 51, 119),
+    "Pallidum": (0, 119, 187),
+    "Hippocampus": (238, 221, 51),
+    "Amygdala": (0, 153, 136),
+    "Accumbens": (238, 119, 51),
+    "Brainstem": (153, 153, 170),
+    "Lateral Ventricle": (102, 204, 238),
+    "Third Ventricle": (68, 170, 221),
+    "Fourth Ventricle": (136, 221, 255),
+    "Cerebellar Cortex": (170, 204, 68),
+    "Frontal Lobe": (221, 68, 119),
+    "Parietal Lobe": (68, 187, 136),
+    "Temporal Lobe": (221, 153, 51),
+    "Occipital Lobe": (102, 102, 204),
+    "Insular Lobe": (187, 85, 170),
+}
+_ATLAS_RIGHT_LIGHTEN = 0.22
+
 
 def _pack(rgb, opacity: float) -> tuple[int, int, int, int]:
     red, green, blue = (int(channel) for channel in rgb)
     return (red, green, blue, int(round(float(opacity) * 255)))
+
+
+def _lighten_rgb(rgb: tuple[int, int, int], amount: float = _ATLAS_RIGHT_LIGHTEN) -> tuple[int, int, int]:
+    return tuple(min(255, int(round(channel + (255 - channel) * amount))) for channel in rgb)
+
+
+def _resolve_atlas_rgb(legend_name: str, side: str | None, rgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    base = ATLAS_COLORS.get(legend_name)
+    if base is None:
+        return (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+    if side == "right":
+        return _lighten_rgb(base)
+    return (int(base[0]), int(base[1]), int(base[2]))
 
 
 def _add(
@@ -102,6 +143,7 @@ def _add(
     opacity: float,
     in_legend: bool = True,
     id_map: dict[int, Structure] | None = None,
+    atlas_rgb: tuple[int, int, int] | None = None,
 ) -> Structure:
     if group not in GROUPS:
         raise ValueError(f"{full_name} group {group!r} is not one of {GROUPS}")
@@ -111,12 +153,18 @@ def _add(
         raise ValueError(f"Duplicate mesh name {mesh_name}")
     if id_map is not None and label_id is not None and label_id in id_map:
         raise ValueError(f"Duplicate label id {label_id} for {full_name}")
+    packed_rgb = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+    resolved_atlas = (
+        (int(atlas_rgb[0]), int(atlas_rgb[1]), int(atlas_rgb[2]))
+        if atlas_rgb is not None
+        else _resolve_atlas_rgb(legend_name, side, packed_rgb)
+    )
     spec = Structure(
         label_id=None if label_id is None else int(label_id),
         full_name=full_name,
         short_name=short_name,
         group=group,
-        rgb=(int(rgb[0]), int(rgb[1]), int(rgb[2])),
+        rgb=packed_rgb,
         legend_name=legend_name,
         side=side,
         source=source,
@@ -124,6 +172,7 @@ def _add(
         key=key,
         opacity=float(opacity),
         in_legend=in_legend,
+        atlas_rgb=resolved_atlas,
     )
     BY_KEY[key] = spec
     BY_MESH[mesh_name] = spec
@@ -524,6 +573,23 @@ def structures_in_volume(parc) -> list[tuple[Structure, np.ndarray]]:
         if np.any(mask):
             found.append((spec, mask))
     return found
+
+
+def catalog_payload() -> list[dict]:
+    """Stable structure list for the viewer colour catalog."""
+    return [
+        {
+            "mesh_name": spec.mesh_name,
+            "legend_name": spec.legend_name,
+            "group": spec.group,
+            "side": spec.side,
+            "short_name": spec.short_name,
+            "rgb": [int(channel) for channel in spec.rgb],
+            "atlas_rgb": [int(channel) for channel in spec.atlas_rgb],
+            "source": spec.source,
+        }
+        for spec in STRUCTURES
+    ]
 
 
 def legend_entries(structures, volumes=None) -> list[dict]:

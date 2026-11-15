@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from recon.labels import GROUPS, anatomy, get, legend_entries, tumor
+from recon.labels import ATLAS_COLORS, GROUPS, anatomy, catalog_payload, get, legend_entries, tumor
 from recon.mesh import SHELL_NAMES
 
 
@@ -96,8 +96,31 @@ def test_legend_merges_a_pair_and_keeps_both_meshes():
     assert [spec.mesh_name for spec, _mask in found] == ["Left Thalamus", "Right Thalamus"]
 
 
+def test_catalog_payload_has_unique_meshes_and_atlas_colours():
+    rows = catalog_payload()
+    assert rows
+    names = [row["mesh_name"] for row in rows]
+    assert len(names) == len(set(names))
+    for row in rows:
+        assert len(row["atlas_rgb"]) == 3
+        assert all(isinstance(value, int) and 0 <= value <= 255 for value in row["atlas_rgb"])
+        assert len(row["rgb"]) == 3
+    by_mesh = {row["mesh_name"]: row for row in rows}
+    left = by_mesh["Left Thalamus"]
+    right = by_mesh["Right Thalamus"]
+    assert left["atlas_rgb"] == list(ATLAS_COLORS["Thalamus"])
+    assert right["atlas_rgb"] != left["atlas_rgb"]
+    assert sum(right["atlas_rgb"]) > sum(left["atlas_rgb"])
+    assert left["rgb"] == right["rgb"] == [0, 118, 14]
+    assert by_mesh["edema"]["atlas_rgb"] == by_mesh["edema"]["rgb"]
+    for legend in ATLAS_COLORS:
+        matches = [row for row in rows if row["legend_name"] == legend]
+        assert matches, legend
+
+
 if __name__ == "__main__":
     test_freesurfer_colors_and_separate_meshes()
     test_tumor_colors_and_tracts_are_atlas_estimated()
     test_legend_merges_a_pair_and_keeps_both_meshes()
+    test_catalog_payload_has_unique_meshes_and_atlas_colours()
     print("labels ok")

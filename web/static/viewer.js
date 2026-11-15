@@ -46,6 +46,8 @@ const uploadScreen = document.querySelector("#upload-screen");
 const viewerRoot = document.querySelector("#viewer");
 const tooltip = document.querySelector("#tooltip");
 const tractNote = document.querySelector("#tract-note");
+const catalogByName = new Map();
+let catalogReady = null;
 
 const SCAN_ROLES = {
   t2f: { name: "FLAIR", help: "Highlights swelling around the tumor.", required: true },
@@ -60,6 +62,7 @@ const REQUIRED_SCANS = SCAN_ORDER.filter((role) => SCAN_ROLES[role].required);
 const upload = { files: [], folder: null, caseId: null, skipped: 0, dicom: false };
 
 setupUpload();
+catalogReady = loadCatalog();
 
 if (caseId) {
   uploadScreen.hidden = true;
@@ -70,7 +73,7 @@ if (caseId) {
     const slices = document.querySelector("#slices-panel");
     if (slices) slices.hidden = true;
   }
-  startViewer(caseId);
+  catalogReady.then(() => startViewer(caseId));
 }
 
 function setupUpload() {
@@ -368,7 +371,54 @@ function formatSeconds(value) {
   return minutes ? `${minutes}:${String(rest).padStart(2, "0")}` : `${seconds.toFixed(1)}s`;
 }
 
+async function loadCatalog() {
+  const rows = await fetch("/api/catalog").then(readJson);
+  catalogByName.clear();
+  for (const row of rows || []) catalogByName.set(row.mesh_name, row);
+  return catalogByName;
+}
+
+function colourScheme() {
+  return document.querySelector("#colour-scheme")?.value || "freesurfer";
+}
+
+function isSolidAnatomy(name, entry) {
+  if (!entry) return false;
+  if (isGlass(name, entry)) return false;
+  if (TUMOR_LABELS.has(name) || name === BLOOD_NAME) return false;
+  if (entry.source === "model" || entry.source === "heuristic") return false;
+  return true;
+}
+
+function anatomyDisplayRgb(name, entry) {
+  const row = catalogByName.get(name);
+  if (!row) return [entry.color[0], entry.color[1], entry.color[2]];
+  const rgb = colourScheme() === "atlas" ? row.atlas_rgb : row.rgb;
+  return rgb || [entry.color[0], entry.color[1], entry.color[2]];
+}
+
+function applyColourScheme(byName) {
+  document.querySelectorAll(".legend-item").forEach((row) => {
+    const name = row.dataset.name;
+    const mesh = byName?.get(name);
+    const entry = mesh?.userData?.entry || null;
+    const swatch = row.querySelector(".swatch");
+    if (!swatch || !entry) return;
+    const rgb = isSolidAnatomy(name, entry) ? anatomyDisplayRgb(name, entry) : entry.color;
+    swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+  });
+  if (!byName) return;
+  for (const [name, mesh] of byName) {
+    const entry = mesh.userData.entry;
+    if (!isSolidAnatomy(name, entry)) continue;
+    if (!mesh.material || mesh.material.isShaderMaterial) continue;
+    const rgb = anatomyDisplayRgb(name, entry);
+    mesh.material.color.copy(srgbColor(rgb).lerp(new THREE.Color(0xffffff), 0.28));
+  }
+}
+
 async function startViewer(id) {
+  await catalogReady;
   const manifest = await fetch(`/api/cases/${encodeURIComponent(id)}/manifest.json?v=anatomy1`).then(readJson);
   document.querySelector("#case-title").textContent = manifest.case_id || id;
   showAnatomyWarning(manifest);
@@ -440,6 +490,11 @@ async function startViewer(id) {
     byName.set(name, object);
   });
   const labels = attachLabels(scene, byName, manifest);
+  applyColourScheme(byName);
+  const schemeSelect = document.querySelector("#colour-scheme");
+  if (schemeSelect) {
+    schemeSelect.addEventListener("change", () => applyColourScheme(byName));
+  }
 
   let volume = await fetch(`/api/cases/${encodeURIComponent(id)}/volume?modality=flair`).then(readJson);
   const clipState = volume.shape.map((length, axis) => ({
@@ -643,7 +698,8 @@ function legendItem(name, entry) {
   if (entry?.volume_only) button.classList.add("is-volume");
   const swatch = document.createElement("span");
   swatch.className = "swatch";
-  swatch.style.background = `rgb(${entry.color[0]}, ${entry.color[1]}, ${entry.color[2]})`;
+  const rgb = isSolidAnatomy(name, entry) ? anatomyDisplayRgb(name, entry) : entry.color;
+  swatch.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
   const label = document.createElement("span");
   label.className = "name";
   label.textContent = structureLabel(name, entry);
@@ -888,7 +944,8 @@ function structureMaterial(entry, name, object) {
       side: THREE.DoubleSide,
     });
   }
-  const color = srgbColor(entry.color).lerp(new THREE.Color(0xffffff), 0.28);
+  const rgb = isSolidAnatomy(name, entry) ? anatomyDisplayRgb(name, entry) : entry.color;
+  const color = srgbColor(rgb).lerp(new THREE.Color(0xffffff), 0.28);
   return new THREE.MeshStandardMaterial({
     color,
     roughness: 0.55,
@@ -1291,10 +1348,12 @@ function drawLegendOnCanvas(ctx, left, width, height, byName, manifest) {
     ctx.fillText(section.dataset.group, left + 16 * scale, y);
     y += 22 * scale;
     section.querySelectorAll(".legend-item").forEach((row) => {
-      const entry = manifest.structures[row.dataset.name];
-      const mesh = byName.get(row.dataset.name);
+      const name = row.dataset.name;
+      const entry = manifest.structures[name];
+      const mesh = byName.get(name);
       ctx.globalAlpha = entry.volume_only || (mesh && mesh.visible) ? 1 : 0.35;
-      ctx.fillStyle = `rgb(${entry.color[0]}, ${entry.color[1]}, ${entry.color[2]})`;
+      const rgb = isSolidAnatomy(name, entry) ? anatomyDisplayRgb(name, entry) : entry.color;
+      ctx.fillStyle = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
       ctx.fillRect(left + 16 * scale, y - 10 * scale, 12 * scale, 12 * scale);
       ctx.fillStyle = "#1c2430";
       ctx.font = `${Math.round(12 * scale)}px Segoe UI, sans-serif`;

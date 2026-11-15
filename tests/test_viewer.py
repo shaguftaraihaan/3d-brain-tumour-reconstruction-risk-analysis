@@ -128,11 +128,17 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "setPixelRatio(Math.min" in script
     assert 'id="glass-opacity"' in html
     assert 'id="auto-rotate"' in html
+    assert 'id="colour-scheme"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
     assert b"viewer.js?v=anatomy1" in page.data
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
+    assert b'id="colour-scheme"' in page.data
+    catalog = create_app().test_client().get("/api/catalog")
+    assert catalog.status_code == 200
+    assert isinstance(catalog.json, list) and len(catalog.json) > 0
+    assert {"mesh_name", "legend_name", "rgb", "atlas_rgb", "source"} <= set(catalog.json[0])
     assert "Cortical grey matter (left)" in script
     assert "Grey matter total" in script or "structureLabel" in script
     assert b'data-edge="top"' in page.data
