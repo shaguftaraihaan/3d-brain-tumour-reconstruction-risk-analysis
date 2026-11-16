@@ -2,6 +2,7 @@
 
 Example:
     python scripts/vessel_qc_sweep.py --study study_ff9c6c72e9d1 --vessel vessels_mra.nii.gz
+    python scripts/vessel_qc_sweep.py --study study_ff9c6c72e9d1 --vessel vessels_mra.nii.gz --enhance
 """
 
 from __future__ import annotations
@@ -40,6 +41,11 @@ def parse_args(argv=None):
         default=SIGMA_HIGH,
         help="Fixed hysteresis seed threshold (default 3.5)",
     )
+    parser.add_argument(
+        "--enhance",
+        action="store_true",
+        help="Run enhance_vessels before thresholding; QC filenames include _enh",
+    )
     return parser.parse_args(argv)
 
 
@@ -56,15 +62,30 @@ def main(argv=None) -> int:
     affine = np.asarray(image.affine, dtype=np.float64)
     stem = vessel_name.replace(".nii.gz", "").replace(".nii", "")
     args.qc_dir.mkdir(parents=True, exist_ok=True)
-    print(f"study={study_id} vessel={vessel_name} sigma_high={args.sigma_high}", flush=True)
+    tag = "_enh" if args.enhance else ""
+    print(
+        f"study={study_id} vessel={vessel_name} sigma_high={args.sigma_high} enhance={args.enhance}",
+        flush=True,
+    )
     for sigma_low in SIGMA_LOW_SWEEP:
-        mask = segment_vessels(volume, affine, sigma_high=args.sigma_high, sigma_low=sigma_low)
+        mask = segment_vessels(
+            volume,
+            affine,
+            sigma_high=args.sigma_high,
+            sigma_low=sigma_low,
+            enhance=args.enhance,
+        )
         stats = vessel_stats(mask, affine)
-        out = args.qc_dir / f"{study_id}_{stem}_{sigma_low:g}.png"
+        region = int(np.count_nonzero(np.isfinite(volume) & (volume != 0)))
+        fraction_pct = (
+            100.0 * float(np.count_nonzero(mask)) / float(region) if region else 0.0
+        )
+        out = args.qc_dir / f"{study_id}_{stem}{tag}_{sigma_low:g}.png"
         write_vessel_qc(volume, mask, affine, out, study_id=study_id)
         print(
             f"sigma_low={sigma_low:g} volume_cm3={stats['volume_cm3']:.4f} "
-            f"component_count={stats['component_count']} -> {out}",
+            f"component_count={stats['component_count']} "
+            f"fraction_pct={fraction_pct:.3f} -> {out}",
             flush=True,
         )
     return 0

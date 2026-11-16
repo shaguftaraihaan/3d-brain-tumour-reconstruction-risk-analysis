@@ -7,6 +7,7 @@ pass the QC image path explicitly.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -15,10 +16,12 @@ from scipy import ndimage
 from recon.mesh import mesh_from_mask
 from recon.postprocess import CONN
 
+logger = logging.getLogger(__name__)
+
 # Seed threshold in robust MAD units above the in-head intensity centre.
 SIGMA_HIGH = 3.5
 # Growth threshold in robust MAD units; voxels above this join if 26-connected to a seed.
-SIGMA_LOW = 2.0
+SIGMA_LOW = 1.5
 # Drop 26-connected blobs smaller than this physical volume (mm³).
 MIN_COMPONENT_MM3 = 20.0
 # Keep at most this many components, largest first.
@@ -27,6 +30,12 @@ KEEP_LARGEST = 40
 MAD_TO_SIGMA = 1.4826
 # Erode a provided head mask by this many millimetres before thresholding.
 HEAD_MARGIN_MM = 8.0
+# Narrow Gaussian width (mm) for the vessel-enhancing fine scale.
+ENHANCE_SMOOTH_MM = 0.3
+# Wide Gaussian width (mm) subtracted to suppress bright brain banding.
+ENHANCE_BACKGROUND_MM = 4.0
+# Reject a mask that covers more than this fraction of the analysis region.
+MAX_VESSEL_FRACTION = 0.03
 # Light Gaussian blur before marching cubes so thin tubes survive.
 MESH_SIGMA = 0.3
 # Do not decimate meshes that already have this many faces or fewer.
@@ -39,14 +48,22 @@ def _voxel_mm3(affine) -> float:
     return abs(float(np.linalg.det(np.asarray(affine, dtype=np.float64)[:3, :3])))
 
 
+def _spacing_mm(affine) -> tuple[float, float, float]:
+    from nibabel.affines import voxel_sizes
+
+    return tuple(float(abs(v)) for v in voxel_sizes(np.asarray(affine, dtype=np.float64)))
+
+
+def _mm_to_voxel_sigmas(affine, mm: float) -> tuple[float, float, float]:
+    return tuple(float(mm) / max(spacing, 1e-6) for spacing in _spacing_mm(affine))
+
+
 def _erode_mask_mm(mask, affine, margin_mm: float) -> np.ndarray:
     """Erode ``mask`` by ``margin_mm`` using the affine voxel sizes."""
     mask = np.asarray(mask, dtype=bool)
     if margin_mm <= 0 or not np.any(mask):
         return mask
-    from nibabel.affines import voxel_sizes
-
-    spacing = tuple(float(abs(v)) for v in voxel_sizes(np.asarray(affine, dtype=np.float64)))
+    spacing = _spacing_mm(affine)
     dist = ndimage.distance_transform_edt(mask, sampling=spacing)
     return dist > float(margin_mm)
 
@@ -59,6 +76,22 @@ def _inside_mask(volume, head_mask, affine, head_margin_mm: float) -> np.ndarray
     return np.isfinite(data) & (data != 0)
 
 
+def enhance_vessels(
+    volume,
+    affine,
+    *,
+    background_mm: float = ENHANCE_BACKGROUND_MM,
+    smooth_mm: float = ENHANCE_SMOOTH_MM,
+) -> np.ndarray:
+    """Multi-scale vesselness-lite: signed fine smooth minus background smooth."""
+    data = np.asarray(volume, dtype=np.float32)
+    if data.ndim != 3:
+        raise ValueError(f"Vessel volume must be 3D, got {data.shape}")
+    fine = ndimage.gaussian_filter(data, sigma=_mm_to_voxel_sigmas(affine, smooth_mm))
+    coarse = ndimage.gaussian_filter(data, sigma=_mm_to_voxel_sigmas(affine, background_mm))
+    return (fine - coarse).astype(np.float32)
+
+
 def segment_vessels(
     volume,
     affine,
@@ -69,6 +102,7 @@ def segment_vessels(
     min_component_mm3: float = MIN_COMPONENT_MM3,
     keep_largest: int = KEEP_LARGEST,
     head_margin_mm: float = HEAD_MARGIN_MM,
+    enhance: bool = False,
 ) -> np.ndarray:
     """Boolean vessel mask via hysteresis thresholding and size filters.
 
@@ -76,6 +110,10 @@ def segment_vessels(
     set is every voxel above ``centre + sigma_low * spread`` that is
     26-connected to a seed. When ``head_mask`` is set it is eroded by
     ``head_margin_mm`` first so scalp fat at the rim cannot grow into the mask.
+
+    With ``enhance=True`` (opt-in), thresholds are computed on the signed
+    :func:`enhance_vessels` response while the inside mask still comes from the
+    original volume (eroded head mask, or nonzero voxels).
     """
     data = np.asarray(volume, dtype=np.float32)
     if data.ndim != 3:
@@ -87,14 +125,20 @@ def segment_vessels(
     if not np.any(inside):
         return out
 
-    samples = data[inside]
+    work = enhance_vessels(data, affine) if enhance else data
+    samples = work[inside]
     centre = float(np.median(samples))
     mad = float(np.median(np.abs(samples - centre)))
     spread = MAD_TO_SIGMA * mad
+    if not np.isfinite(spread) or spread == 0.0:
+        raise ValueError(
+            f"Vessel intensity spread is {spread!r}; cannot set hysteresis thresholds "
+            "(median absolute deviation is zero or non-finite inside the analysis region)"
+        )
     high = centre + float(sigma_high) * spread
     low = centre + float(sigma_low) * spread
-    seeds = inside & (data > high)
-    candidates = inside & (data > low)
+    seeds = inside & (work > high)
+    candidates = inside & (work > low)
     if not np.any(seeds):
         return out
     grown = ndimage.binary_propagation(seeds, structure=CONN, mask=candidates)
@@ -121,7 +165,17 @@ def segment_vessels(
             break
     if not kept:
         return out
-    return np.isin(labeled, kept)
+    mask = np.isin(labeled, kept)
+    region = int(np.count_nonzero(inside))
+    fraction = float(np.count_nonzero(mask)) / float(region) if region else 0.0
+    if fraction > MAX_VESSEL_FRACTION:
+        logger.warning(
+            "Vessel mask covers %.4f of the analysis region (limit %.4f); returning empty mask",
+            fraction,
+            MAX_VESSEL_FRACTION,
+        )
+        return out
+    return mask
 
 
 def vessel_stats(mask, affine) -> dict:
