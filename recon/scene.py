@@ -112,6 +112,44 @@ def default_output_root() -> Path:
     return Path(__file__).resolve().parents[1] / "outputs"
 
 
+def resolve_output_dir(outputs: Path | str, case_id: str) -> Path:
+    """Return the built folder under ``outputs/<id>`` or ``outputs/real/<id>``.
+
+    A folder counts as built when it holds both ``manifest.json`` and ``scene.glb``.
+    """
+    case_id = str(case_id or "").strip()
+    outputs = Path(outputs)
+    for candidate in (outputs / case_id, outputs / "real" / case_id):
+        if (candidate / "manifest.json").is_file() and (candidate / "scene.glb").is_file():
+            return candidate
+    raise FileNotFoundError(f"No built outputs for case {case_id}")
+
+
+def iter_built_output_dirs(outputs: Path | str) -> list[Path]:
+    """Built case folders under ``outputs/`` and ``outputs/real/`` (sorted by path)."""
+    outputs = Path(outputs)
+    found: list[Path] = []
+    if not outputs.is_dir():
+        return found
+    for child in sorted(outputs.iterdir()):
+        if child.name == "real" or not child.is_dir():
+            continue
+        try:
+            found.append(resolve_output_dir(outputs, child.name))
+        except FileNotFoundError:
+            continue
+    real_root = outputs / "real"
+    if real_root.is_dir():
+        for child in sorted(real_root.iterdir()):
+            if not child.is_dir():
+                continue
+            try:
+                found.append(resolve_output_dir(outputs, child.name))
+            except FileNotFoundError:
+                continue
+    return found
+
+
 def scene_is_up_to_date(out_dir, case_dir=None, *, anatomy=True, model=None) -> bool:
     """True when ``scene.glb`` already has the requested anatomy for these files."""
     out_dir = Path(out_dir)
@@ -381,29 +419,56 @@ def _store_cached_parcellation(path: Path, parc, affine) -> None:
     nib.save(nib.Nifti1Image(np.asarray(parc, dtype=np.int16), np.asarray(affine, dtype=np.float64)), str(path))
 
 
-def _raw_parcellation(case, case_dir, synthseg, shape, affine, device, case_id, *, progress=None, file_hash=None, tumor_label=None, clock=None):
+def _raw_parcellation(
+    case,
+    case_dir,
+    synthseg,
+    shape,
+    affine,
+    device,
+    case_id,
+    *,
+    progress=None,
+    file_hash=None,
+    tumor_label=None,
+    clock=None,
+    anatomy_method=None,
+):
     """SynthSeg labels on the scan grid, before the tumor is removed.
 
     A hash-keyed cache under ``caches/anatomy/<hash>/`` stores the painted
-    parcellation so a second open of the same files skips SynthSeg and ANTs.
+    parcellation (filename includes the method) so a second open of the same
+    files skips SynthSeg and ANTs without mixing atlas and SynthSeg results.
     """
-    from recon.anatomy import parcellate_case, resample_parcellation
+    from recon.anatomy import (
+        ANATOMY_RESULT_SYNTHSEG,
+        anatomy_cache_filename,
+        normalize_anatomy_method,
+        parcellate_case,
+        planned_anatomy_result,
+        resample_parcellation,
+        select_device,
+    )
+
+    method = normalize_anatomy_method(anatomy_method)
+    planned = planned_anatomy_result(method, device)
 
     def _stage(name: str) -> None:
         if progress is not None:
             progress.set_stage(name)
         if clock is not None:
-            if name == "Anatomy":
+            if name.startswith("Anatomy"):
                 clock.start("synthseg")
             elif name == "Lobes":
                 clock.start("lobe_warp")
 
     cache_dir = default_anatomy_cache_root() / file_hash if file_hash else None
-    cached = _load_cached_parcellation(cache_dir / "parc_raw.nii.gz" if cache_dir else None, shape)
+    cache_path = cache_dir / anatomy_cache_filename(planned) if cache_dir else None
+    cached = _load_cached_parcellation(cache_path, shape)
     if cached is not None:
         _stage("Anatomy")
         _stage("Lobes")
-        return cached
+        return cached, planned
 
     parc = case.get("synthseg")
     source_affine = case.get("synthseg_affine")
@@ -418,16 +483,20 @@ def _raw_parcellation(case, case_dir, synthseg, shape, affine, device, case_id, 
         parc = np.rint(np.squeeze(np.asarray(parc))).astype(np.int16)
         if parc.shape == tuple(shape) and source_affine is None:
             _stage("Lobes")
-            return parc
+            return parc, ANATOMY_RESULT_SYNTHSEG
         if source_affine is None:
             raise ValueError(
                 f"SynthSeg shape {parc.shape} does not match the scan grid {tuple(shape)}"
             )
         _stage("Lobes")
-        return resample_parcellation(parc, source_affine, shape, affine)
+        return resample_parcellation(parc, source_affine, shape, affine), ANATOMY_RESULT_SYNTHSEG
     if case_dir is None:
         raise ValueError("case_dir is required to run SynthSeg")
-    _stage("Anatomy")
+    chosen = select_device(device)
+    if planned == ANATOMY_RESULT_SYNTHSEG and chosen.type == "cpu":
+        _stage("Anatomy (SynthSeg on CPU — can take several minutes)")
+    else:
+        _stage("Anatomy")
     tumor = np.zeros(shape, dtype=np.uint8) if tumor_label is None else np.asarray(tumor_label)
     cache_key = file_hash or case_id
     with tempfile.TemporaryDirectory() as tmp:
@@ -437,21 +506,25 @@ def _raw_parcellation(case, case_dir, synthseg, shape, affine, device, case_id, 
         def on_lobes():
             _stage("Lobes")
 
-        raw, _cleaned, _removed = parcellate_case(
+        raw, _cleaned, _removed, used = parcellate_case(
             t1_ras,
             tumor,
             affine,
             case_id=cache_key,
             device=device,
             on_lobes=on_lobes,
+            anatomy_method=method,
         )
     if cache_dir is not None:
-        _store_cached_parcellation(cache_dir / "parc_raw.nii.gz", raw, affine)
+        _store_cached_parcellation(cache_dir / anatomy_cache_filename(used), raw, affine)
         (cache_dir / "meta.json").write_text(
-            json.dumps({"hash": file_hash, "case_id": case_id}, indent=2),
+            json.dumps(
+                {"hash": file_hash, "case_id": case_id, "anatomy_method": used},
+                indent=2,
+            ),
             encoding="utf-8",
         )
-    return raw
+    return raw, used
 
 
 def _mesh_intact_anatomy(scene, out_dir, structures, exported, parc, affine):
@@ -600,12 +673,15 @@ def build_scene(
     tta=True,
     overlap=None,
     progress=None,
+    anatomy_method=None,
 ):
     """Write ``outputs/<case_id>/``: load RAS, tumor, anatomy, meshes.
 
     Anatomy (GM/WM, subcortical, ventricles, cerebellum, brainstem, lobes) is
     on by default. Pass ``anatomy=False`` to skip it. SynthSeg and ANTs
     transforms are cached by a hash of the four input files.
+    ``anatomy_method`` is ``auto``, ``synthseg``, or ``atlas`` (see
+    ``recon.anatomy.parcellate_case``).
     """
     from recon.progress import BuildProgress
 
@@ -625,6 +701,7 @@ def build_scene(
             tta=tta,
             overlap=overlap,
             progress=progress,
+            anatomy_method=anatomy_method,
         )
     except Exception as exc:
         progress.fail(str(exc))
@@ -645,11 +722,13 @@ def _export_scene(
     tta,
     overlap,
     progress,
+    anatomy_method=None,
 ):
     from recon.io import input_files_hash, validate_case_grid
     from recon.postprocess import PostConfig, brain_mask_from_image, postprocess
 
     anatomy_warning = None
+    anatomy_method_used = None
     file_hash = None
     progress.set_stage("Loading")
     if isinstance(case, (str, Path)):
@@ -720,7 +799,7 @@ def _export_scene(
     clock.start("synthseg")
     if anatomy:
         try:
-            raw_parc = _raw_parcellation(
+            raw_parc, anatomy_method_used = _raw_parcellation(
                 case,
                 case_dir,
                 synthseg,
@@ -732,11 +811,13 @@ def _export_scene(
                 file_hash=file_hash,
                 tumor_label=label,
                 clock=clock,
+                anatomy_method=anatomy_method,
             )
         except Exception as exc:
             anatomy_warning = f"Anatomy unavailable: {exc}"
             logger.exception("anatomy failed for %s", case_id)
             raw_parc = None
+            anatomy_method_used = None
             progress.skip("Lobes")
             clock.skip("lobe_warp")
     else:
@@ -910,6 +991,7 @@ def _export_scene(
         "anatomy_removed_voxels": {name: int(count) for name, count in anatomy_removed.items()},
         "blood_products_note": BLOOD_NOTE if BLOOD_MESH in structures else None,
         "anatomy_warning": anatomy_warning,
+        "anatomy_method": anatomy_method_used,
         "stage_times_s": clock.as_dict(),
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

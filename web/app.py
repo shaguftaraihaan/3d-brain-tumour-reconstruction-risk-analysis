@@ -425,12 +425,9 @@ def _write_empty_seg(reference: Path, dest: Path) -> None:
 
 def _resolve_output_dir(app: Flask, case_id: str) -> Path:
     """Return the built output folder for a BraTS or real (hashed) case id."""
-    case_id = _safe_case_id(case_id)
-    outputs = Path(app.config["OUTPUTS"])
-    for candidate in (outputs / case_id, outputs / "real" / case_id):
-        if (candidate / "manifest.json").is_file() and (candidate / "scene.glb").is_file():
-            return candidate
-    raise FileNotFoundError(f"No built outputs for case {case_id}")
+    from recon.scene import resolve_output_dir
+
+    return resolve_output_dir(app.config["OUTPUTS"], _safe_case_id(case_id))
 
 
 def _output_file(app: Flask, case_id: str, name: str) -> Path:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import tempfile
 from pathlib import Path
 
@@ -36,6 +37,10 @@ from recon.mesh import mesh_from_mask
 from recon.postprocess import CONN
 
 logger = logging.getLogger(__name__)
+
+ANATOMY_METHODS = ("auto", "synthseg", "atlas")
+ANATOMY_RESULT_SYNTHSEG = "synthseg"
+ANATOMY_RESULT_ATLAS = "mni-atlas"
 
 # Glass cortex: light smooth so gyri stay. Heavy smoothing lived here before.
 BRAIN_SIGMA = 0.5
@@ -519,6 +524,43 @@ def select_device(device=None, *, cuda_available=None, mps_available=None) -> to
     return torch.device("cpu")
 
 
+def default_anatomy_method() -> str:
+    """``ANATOMY_METHOD`` when set to auto/synthseg/atlas, else ``auto``."""
+    env = (os.environ.get("ANATOMY_METHOD") or "").strip().lower()
+    if env in ANATOMY_METHODS:
+        return env
+    return "auto"
+
+
+def normalize_anatomy_method(value: str | None = None) -> str:
+    if value is None or str(value).strip() == "":
+        return default_anatomy_method()
+    method = str(value).strip().lower()
+    if method not in ANATOMY_METHODS:
+        raise ValueError(f"anatomy_method must be one of {ANATOMY_METHODS}, got {value!r}")
+    return method
+
+
+def planned_anatomy_result(method: str | None, device=None) -> str:
+    """Cache / plan key before running: ``synthseg`` or ``mni-atlas``."""
+    method = normalize_anatomy_method(method)
+    if method == "atlas":
+        return ANATOMY_RESULT_ATLAS
+    if method == "synthseg":
+        return ANATOMY_RESULT_SYNTHSEG
+    chosen = select_device(device)
+    if chosen.type == "cpu":
+        return ANATOMY_RESULT_ATLAS
+    return ANATOMY_RESULT_SYNTHSEG
+
+
+def anatomy_cache_filename(result_method: str) -> str:
+    """``parc_raw_synthseg.nii.gz`` or ``parc_raw_mni-atlas.nii.gz``."""
+    if result_method not in (ANATOMY_RESULT_SYNTHSEG, ANATOMY_RESULT_ATLAS):
+        raise ValueError(f"Unknown anatomy result method: {result_method!r}")
+    return f"parc_raw_{result_method}.nii.gz"
+
+
 def cortical_parcellation_supported(model) -> bool:
     """True when this SynthSeg object can emit Desikan-Killiany cortex."""
     predict = getattr(model, "predict", None)
@@ -871,12 +913,18 @@ def parcellate_case(
     device=None,
     synthseg_runner=None,
     on_lobes=None,
+    anatomy_method=None,
 ):
     """Build one case's anatomical parcellation and optionally save it.
 
     ``tumor_label`` and ``tumor_affine`` are the BraTS segmentation grid.
-    The return value is ``(raw, cleaned, removed_voxels)``. ``raw`` still
-    contains tumor overlap. ``cleaned`` is what ``anatomy_seg.nii.gz`` stores.
+    The return value is ``(raw, cleaned, removed_voxels, method)``. ``raw``
+    still contains tumor overlap. ``cleaned`` is what ``anatomy_seg.nii.gz``
+    stores. ``method`` is ``synthseg`` or ``mni-atlas`` (what actually ran).
+
+    ``anatomy_method`` is ``auto`` (SynthSeg on GPU, atlas on CPU), ``synthseg``
+    (run SynthSeg on the selected device, including CPU), or ``atlas``.
+    Default is ``auto``, or ``ANATOMY_METHOD`` when that env var is set.
 
     ``synthseg_runner`` replaces DIPY in tests. It is
     ``(t1, affine, device) -> (labels, names, has_cortical)``.
@@ -884,25 +932,30 @@ def parcellate_case(
     t1_path = Path(t1_path)
     if not t1_path.is_file():
         raise FileNotFoundError(f"Patient T1 was not found: {t1_path}")
+    method = normalize_anatomy_method(anatomy_method)
     chosen = select_device(device)
-    logger.info("anatomy device=%s", chosen.type)
+    logger.info("anatomy device=%s method=%s", chosen.type, method)
     t1_image = nib.load(str(t1_path))
     t1 = np.squeeze(np.asarray(t1_image.get_fdata(dtype=np.float32)))
     t1_affine = np.asarray(t1_image.affine, dtype=np.float64)
     tumor_shape = np.squeeze(np.asarray(tumor_label)).shape
-    if synthseg_runner is None and chosen.type == "cpu":
-        logger.info("CPU: warping the MNI structural atlas for lobes (SynthSeg is reserved for a GPU)")
+
+    use_atlas = method == "atlas" or (
+        method == "auto" and chosen.type == "cpu" and synthseg_runner is None
+    )
+    if use_atlas:
+        if method == "auto":
+            logger.info("CPU: warping the MNI structural atlas for lobes (SynthSeg is reserved for a GPU)")
         return _parcellate_from_atlas(
             t1_path, t1, tumor_label, tumor_shape, tumor_affine,
             atlas_dir, cache_dir, case_id, out_path, reference_path, tumor_seg_path,
             on_lobes=on_lobes,
         )
+
     runner = synthseg_runner if synthseg_runner is not None else run_synthseg
     try:
         synthseg, names, reported_cortical = runner(t1, t1_affine, chosen)
     except Exception as exc:
-        if synthseg_runner is not None:
-            raise
         logger.warning(
             "SynthSeg is unavailable (%s); using the warped MNI structural atlas alone", exc
         )
@@ -936,9 +989,10 @@ def parcellate_case(
         )
         lobes = resample_parcellation(warped, warped_affine, on_grid.shape, tumor_affine)
         raw = paint_lobes(on_grid, lobes)
-    return _finish_parcellation(
+    raw, cleaned, removed = _finish_parcellation(
         raw, tumor_label, names, tumor_affine, out_path, reference_path, tumor_seg_path
     )
+    return raw, cleaned, removed, ANATOMY_RESULT_SYNTHSEG
 
 
 def _parcellate_from_atlas(
@@ -961,9 +1015,10 @@ def _parcellate_from_atlas(
     if atlas.shape == np.asarray(t1).shape:
         atlas[np.asarray(t1) <= 0] = 0
     raw = resample_parcellation(atlas, warped_affine, tumor_shape, tumor_affine)
-    return _finish_parcellation(
+    raw, cleaned, removed = _finish_parcellation(
         raw, tumor_label, None, tumor_affine, out_path, reference_path, tumor_seg_path
     )
+    return raw, cleaned, removed, ANATOMY_RESULT_ATLAS
 
 
 def _finish_parcellation(raw, tumor_label, names, tumor_affine, out_path, reference_path, tumor_seg_path):

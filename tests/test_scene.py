@@ -392,7 +392,8 @@ def test_anatomy_cache_skips_synthseg_on_reopen():
 
         def fake_parc(*args, **kwargs):
             calls["n"] += 1
-            return parc, parc, {}
+            # auto on CPU plans an mni-atlas cache key; return that so reopen hits the cache.
+            return parc, parc, {}, "mni-atlas"
 
         import recon.anatomy as anatomy
         import recon.scene as scene_mod

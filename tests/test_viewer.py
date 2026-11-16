@@ -343,6 +343,8 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     tours = (ROOT / "web" / "static" / "tours.js").read_text(encoding="utf-8")
     assert "buildTour" in tours
     assert "TourPlayer" in tours
+    assert "function framingPose(objects, margin = 1)" in tours
+    assert "framingPose(focusTargets, 1.6)" in tours
     assert 'id="tour-bar"' in html
     assert 'id="tour-start"' in html
     page = create_app().test_client().get("/viewer")
@@ -356,6 +358,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert b'id="tour-bar"' in page.data
     assert b'id="scene-loading"' in page.data
     assert "Loading scene…" in script
+    assert b'class="panel-footer"' in page.data
     catalog = create_app().test_client().get("/api/catalog")
     assert catalog.status_code == 200
     assert isinstance(catalog.json, list) and len(catalog.json) > 0
@@ -380,6 +383,12 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "color-scheme: light" in css
     assert "background: #f4f6f8" in css
     assert "background: #14171a" not in css
+    assert "body:has(#viewer:not([hidden])) > .site-footer" in css
+    assert ".panel-footer" in css
+    assert "calc(100vh - 64px)" not in css
+    assert "#viewer {" in css and "height: 100vh;" in css
+    assert "#wl-seq" in css
+    assert "color: #1c2430" in css
     assert "setClearColor(0x0b0f17)" in script
     assert "orientNormals" in script
     assert "structureName" in script

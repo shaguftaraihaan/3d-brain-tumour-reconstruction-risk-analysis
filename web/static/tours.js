@@ -123,7 +123,7 @@ export function buildTour(manifest) {
   return steps;
 }
 
-function framingPose(objects) {
+function framingPose(objects, margin = 1) {
   const present = objects.filter(Boolean);
   const box = new THREE.Box3();
   present.forEach((mesh) => box.expandByObject(mesh));
@@ -136,7 +136,7 @@ function framingPose(objects) {
     };
   }
   const target = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3()).length() || 100;
+  const size = (box.getSize(new THREE.Vector3()).length() || 100) * margin;
   return {
     position: target.clone().add(new THREE.Vector3(size * 0.9, -size * 1.3, size * 0.55)),
     target,
@@ -224,15 +224,21 @@ export class TourPlayer {
     this.index = index;
     const step = this.steps[index];
     const showNames = this._resolveShow(step.show);
+    const focusTargets = [...showNames]
+      .map((name) => this.byName.get(name))
+      .filter(Boolean);
     for (const mesh of this._glassMeshes()) showNames.add(mesh.name);
     this.byName.forEach((_mesh, name) => this.setVisible(name, showNames.has(name)));
     this._setGlassOpacity(index === 0 ? null : 0.22);
     if (this.syncLegend) this.syncLegend();
-    const focusMesh = step.focus ? this.byName.get(step.focus) : null;
-    const frameMeshes = focusMesh
-      ? [focusMesh]
-      : [...showNames].map((name) => this.byName.get(name)).filter(Boolean);
-    this._animateTo(framingPose(frameMeshes));
+    // Several step structures: combined bounds with ~60% extra margin. One keeps the old framing.
+    if (focusTargets.length > 1) {
+      this._animateTo(framingPose(focusTargets, 1.6));
+    } else {
+      const focusMesh = step.focus ? this.byName.get(step.focus) : null;
+      const frameMeshes = focusMesh ? [focusMesh] : focusTargets;
+      this._animateTo(framingPose(frameMeshes));
+    }
     if (this.onChange) this.onChange(step, index, this.steps.length);
   }
 

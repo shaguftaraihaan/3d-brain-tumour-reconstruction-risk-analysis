@@ -20,6 +20,10 @@ body:has(#viewer:not([hidden])) {
   height: 100vh;
   overflow: hidden;
 }
+/* Viewer page: keep disclaimer in the side panel so #slices-panel is not clipped. */
+body:has(#viewer:not([hidden])) > .site-footer {
+  display: none;
+}
 
 #upload-screen {
   display: grid;
@@ -116,7 +120,7 @@ select {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  height: calc(100vh - 64px);
+  height: 100vh;
   background: #0b0f17;
 }
 #viewer[hidden] { display: none !important; }
@@ -154,6 +158,15 @@ select {
   flex-wrap: wrap;
   gap: 10px 16px;
 }
+.panel-footer {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid #d5dde6;
+  color: #5b6b7c;
+  font-size: 12px;
+}
+.panel-footer p { margin: 6px 0 0; }
+.panel-footer a { color: #2f6fed; }
 
 #panel {
   position: fixed;
@@ -469,6 +482,12 @@ th { color: #5b6b7c; font-weight: 600; }
 }
 #wl-box { margin-top: 8px; }
 #wl-box label { font-size: 12px; }
+/* Side-panel select look: dark text on white (do not inherit slices-panel colour). */
+#wl-seq {
+  background: #ffffff;
+  color: #1c2430;
+  border: 1px solid #c5d0dc;
+}
 #blood-note {
   margin: 8px 0 12px;
   padding: 8px;

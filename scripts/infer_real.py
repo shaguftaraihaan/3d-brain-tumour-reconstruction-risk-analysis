@@ -72,6 +72,7 @@ def infer_study(
     model: str,
     fast: bool,
     anatomy: bool,
+    anatomy_method: str | None = None,
 ) -> dict:
     from recon.infer import CHANNEL_ORDER, apply_model_preprocessing, load_model, predict_probs, resample_probabilities, roi_for
     from recon.postprocess import PostConfig, brain_mask_from_image, postprocess
@@ -123,6 +124,7 @@ def infer_study(
         config=config,
         tta=tta,
         overlap=0.5 if fast else None,
+        anatomy_method=anatomy_method,
     )
     stats = _summarize(label, probs, affine)
     stats["manifest"] = out_root / study_id / "manifest.json"
@@ -284,6 +286,12 @@ def parse_args(argv=None):
     parser.add_argument("--fast", action="store_true", help="Four flipped views, overlap 0.5")
     parser.add_argument("--no-anatomy", action="store_true")
     parser.add_argument(
+        "--anatomy-method",
+        choices=("auto", "synthseg", "atlas"),
+        default=None,
+        help="auto: SynthSeg on GPU, MNI atlas on CPU (default). synthseg: run SynthSeg even on CPU. atlas: always MNI.",
+    )
+    parser.add_argument(
         "--from-outputs",
         action="store_true",
         help="Rebuild the summary CSV from existing pred_seg / manifests (no inference)",
@@ -357,6 +365,7 @@ def main(argv=None) -> int:
                     model=args.model,
                     fast=args.fast,
                     anatomy=not args.no_anatomy,
+                    anatomy_method=args.anatomy_method,
                 )
             except Exception as exc:
                 row["qc_status"] = "FAIL"

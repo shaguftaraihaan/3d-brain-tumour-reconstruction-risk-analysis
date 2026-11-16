@@ -196,7 +196,7 @@ def test_parcellate_reuses_cached_transforms_and_writes_anatomy_seg():
             stored.write_text("syn", encoding="utf-8")
             _store_transforms(cache_case, _expected, [str(stored)])
             out = root / "anatomy_seg.nii.gz"
-            raw, cleaned, removed = parcellate_case(
+            raw, cleaned, removed, used = parcellate_case(
                 root / "t1.nii.gz",
                 tumor,
                 affine,
@@ -207,6 +207,7 @@ def test_parcellate_reuses_cached_transforms_and_writes_anatomy_seg():
                 device="cpu",
                 synthseg_runner=runner,
             )
+            assert used == "synthseg"
             saved = nib.load(out)
             assert calls["register"] == 0
             assert calls["nearest"] == 1
@@ -259,7 +260,7 @@ def test_cpu_skips_synthseg_and_uses_the_atlas():
             t1 = np.zeros(shape, dtype=np.float32)
             t1[1:5, 1:5, 1:5] = 1
             _write(root / "t1.nii.gz", t1)
-            raw, cleaned, _removed = parcellate_case(
+            raw, cleaned, _removed, used = parcellate_case(
                 root / "t1.nii.gz",
                 np.zeros(shape, dtype=np.uint8),
                 np.eye(4),
@@ -269,6 +270,7 @@ def test_cpu_skips_synthseg_and_uses_the_atlas():
     finally:
         anatomy.warp_mni_lobes = original
     assert calls["synthseg"] == 0
+    assert used == "mni-atlas"
     assert int(raw.max()) == LOBE_LABELS["frontal"]
     assert int(cleaned.max()) == LOBE_LABELS["frontal"]
 
@@ -285,7 +287,7 @@ def test_desikan_labels_skip_the_lobe_warp():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         _write(root / "t1.nii.gz", np.ones(shape, dtype=np.float32))
-        _raw, cleaned, removed = parcellate_case(
+        _raw, cleaned, removed, used = parcellate_case(
             root / "t1.nii.gz",
             tumor,
             np.eye(4),
@@ -294,8 +296,192 @@ def test_desikan_labels_skip_the_lobe_warp():
             device="cpu",
             synthseg_runner=runner,
         )
+    assert used == "synthseg"
     assert cleaned[1, 1, 1] == 1003
     assert removed["ctx-lh-superiorfrontal"] == 0
+
+
+def test_anatomy_method_synthseg_on_cpu_calls_runner():
+    shape = (5, 5, 5)
+    synth = np.zeros(shape, dtype=np.int16)
+    synth[2, 2, 2] = 1003
+    calls = {"n": 0}
+
+    def runner(t1, affine, device):
+        calls["n"] += 1
+        assert device.type == "cpu"
+        return synth, {1003: "ctx-lh-superiorfrontal"}, True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write(root / "t1.nii.gz", np.ones(shape, dtype=np.float32))
+        _raw, _cleaned, _removed, used = parcellate_case(
+            root / "t1.nii.gz",
+            np.zeros(shape, dtype=np.uint8),
+            np.eye(4),
+            device="cpu",
+            anatomy_method="synthseg",
+            synthseg_runner=runner,
+            atlas_dir=root,
+        )
+    assert calls["n"] == 1
+    assert used == "synthseg"
+
+
+def test_anatomy_method_atlas_never_calls_runner():
+    import recon.anatomy as anatomy
+
+    shape = (6, 6, 6)
+    atlas = np.zeros(shape, dtype=np.int16)
+    atlas[1:5, 1:5, 1:5] = 3
+    calls = {"n": 0}
+
+    def runner(t1, affine, device):
+        calls["n"] += 1
+        raise AssertionError("runner must not run for anatomy_method=atlas")
+
+    original = anatomy.warp_mni_lobes
+    anatomy.warp_mni_lobes = lambda *a, **k: (atlas, np.eye(4))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            t1 = np.zeros(shape, dtype=np.float32)
+            t1[1:5, 1:5, 1:5] = 1
+            _write(root / "t1.nii.gz", t1)
+            _raw, _cleaned, _removed, used = parcellate_case(
+                root / "t1.nii.gz",
+                np.zeros(shape, dtype=np.uint8),
+                np.eye(4),
+                device="cpu",
+                anatomy_method="atlas",
+                synthseg_runner=runner,
+            )
+    finally:
+        anatomy.warp_mni_lobes = original
+    assert calls["n"] == 0
+    assert used == "mni-atlas"
+
+
+def test_anatomy_method_auto_on_cpu_does_not_call_runner():
+    import recon.anatomy as anatomy
+
+    shape = (6, 6, 6)
+    atlas = np.zeros(shape, dtype=np.int16)
+    atlas[1:5, 1:5, 1:5] = 3
+    calls = {"n": 0}
+
+    def runner(t1, affine, device):
+        calls["n"] += 1
+        raise AssertionError("auto on CPU must not call SynthSeg")
+
+    original = anatomy.warp_mni_lobes
+    anatomy.warp_mni_lobes = lambda *a, **k: (atlas, np.eye(4))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            t1 = np.zeros(shape, dtype=np.float32)
+            t1[1:5, 1:5, 1:5] = 1
+            _write(root / "t1.nii.gz", t1)
+            # Pass runner=None so auto+CPU uses the atlas path (production behaviour).
+            _raw, _cleaned, _removed, used = parcellate_case(
+                root / "t1.nii.gz",
+                np.zeros(shape, dtype=np.uint8),
+                np.eye(4),
+                device="cpu",
+                anatomy_method="auto",
+                synthseg_runner=None,
+            )
+    finally:
+        anatomy.warp_mni_lobes = original
+    assert calls["n"] == 0
+    assert used == "mni-atlas"
+
+
+def test_runner_raise_returns_mni_atlas_method():
+    import recon.anatomy as anatomy
+
+    shape = (6, 6, 6)
+    atlas = np.zeros(shape, dtype=np.int16)
+    atlas[1:5, 1:5, 1:5] = 3
+
+    def runner(t1, affine, device):
+        raise RuntimeError("SynthSeg boom")
+
+    original = anatomy.warp_mni_lobes
+    anatomy.warp_mni_lobes = lambda *a, **k: (atlas, np.eye(4))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            t1 = np.zeros(shape, dtype=np.float32)
+            t1[1:5, 1:5, 1:5] = 1
+            _write(root / "t1.nii.gz", t1)
+            _raw, _cleaned, _removed, used = parcellate_case(
+                root / "t1.nii.gz",
+                np.zeros(shape, dtype=np.uint8),
+                np.eye(4),
+                device="cpu",
+                anatomy_method="synthseg",
+                synthseg_runner=runner,
+            )
+    finally:
+        anatomy.warp_mni_lobes = original
+    assert used == "mni-atlas"
+
+
+def test_anatomy_cache_does_not_return_atlas_for_synthseg_request(tmp_path):
+    from recon.anatomy import ANATOMY_RESULT_ATLAS, ANATOMY_RESULT_SYNTHSEG, anatomy_cache_filename
+    from recon.scene import _load_cached_parcellation, _raw_parcellation, _store_cached_parcellation
+
+    shape = (4, 4, 4)
+    affine = np.eye(4)
+    cache_root = tmp_path / "anatomy"
+    file_hash = "deadbeef"
+    cache_dir = cache_root / file_hash
+    atlas_parc = np.zeros(shape, dtype=np.int16)
+    atlas_parc[1, 1, 1] = 101
+    _store_cached_parcellation(cache_dir / anatomy_cache_filename(ANATOMY_RESULT_ATLAS), atlas_parc, affine)
+    assert _load_cached_parcellation(cache_dir / anatomy_cache_filename(ANATOMY_RESULT_ATLAS), shape) is not None
+    assert _load_cached_parcellation(cache_dir / anatomy_cache_filename(ANATOMY_RESULT_SYNTHSEG), shape) is None
+
+    calls = {"n": 0}
+    synth = np.zeros(shape, dtype=np.int16)
+    synth[2, 2, 2] = 10
+
+    def fake_parc(*args, **kwargs):
+        calls["n"] += 1
+        assert kwargs.get("anatomy_method") == "synthseg"
+        return synth, synth, {}, "synthseg"
+
+    import recon.anatomy as anatomy
+    import recon.scene as scene_mod
+
+    original = anatomy.parcellate_case
+    original_cache = scene_mod.default_anatomy_cache_root
+    anatomy.parcellate_case = fake_parc
+    scene_mod.default_anatomy_cache_root = lambda: cache_root
+    try:
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        for suffix in ("t2f", "t1n", "t1c", "t2w"):
+            _write(case_dir / f"{suffix}.nii.gz", np.ones(shape, dtype=np.float32), affine)
+        raw, used = _raw_parcellation(
+            {"case_id": "case"},
+            case_dir,
+            None,
+            shape,
+            affine,
+            "cpu",
+            "case",
+            file_hash=file_hash,
+            tumor_label=np.zeros(shape, dtype=np.uint8),
+            anatomy_method="synthseg",
+        )
+    finally:
+        anatomy.parcellate_case = original
+        scene_mod.default_anatomy_cache_root = original_cache
+    assert calls["n"] == 1
+    assert used == "synthseg"
+    assert int(raw[2, 2, 2]) == 10
 
 
 def test_lobe_warp_keeps_the_t1_nifti_affine():
