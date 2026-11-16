@@ -53,6 +53,7 @@ def test_freesurfer_colors_and_separate_meshes():
     assert "Possible blood products" in get("blood_products").mesh_name
     assert anatomy(101).rgb == (236, 118, 142)
     assert anatomy(101).opacity == 0.35
+    assert anatomy(101).source == "atlas-estimated"
     assert anatomy(104).rgb == (122, 118, 214)
     assert anatomy(8).rgb == (159, 184, 214)
     assert anatomy(16).rgb == (159, 184, 214)

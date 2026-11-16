@@ -352,6 +352,8 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert b"viewer.js?v=anatomy1" in page.data
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
+    assert b'id="anatomy-method-note"' in page.data
+    assert b"Brain structures are atlas estimates for this case, not segmented from the scan." in page.data
     assert b'id="colour-scheme"' in page.data
     assert b'id="structure-search"' in page.data
     assert b'id="structure-card"' in page.data

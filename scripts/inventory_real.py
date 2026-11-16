@@ -38,7 +38,9 @@ _PROTOCOL_WORDS = {"mr", "study", "mri", "data", "nifti", "dicom", "scan", "seri
 
 # Contrast: token CE / Gd / post / +C. Philips CLEAR / SENSE / SPIR are not contrast.
 _CONTRAST = re.compile(r"(?:^|[^a-z0-9])(?:ce|gd|gad|gado|gadolinium|post)(?:[^a-z0-9]|$)")
-_T1 = re.compile(r"(?:^|[^a-z0-9])(?:[es]*t1w?|t1w|mprage|mp2rage|tfe)(?:[^a-z0-9]|$)")
+_T1 = re.compile(
+    r"(?:^|[^a-z0-9])(?:[es]*t1w?|t1w|mprage|mp2rage|tfe|bravo|fspgr)(?:[^a-z0-9]|$)"
+)
 _T2 = re.compile(r"(?:^|[^a-z0-9])(?:[es]*t2w?|t2w|tse|drive)(?:[^a-z0-9]|$)")
 _FFE = re.compile(r"(?:^|[^a-z0-9])ffe(?:[^a-z0-9]|$)")
 _FLAIR = re.compile(r"flair")
@@ -120,7 +122,7 @@ def guess_modality(*parts: str, image_type=()) -> tuple[str, str, bool]:
     if ffe and not t1:
         return "T2*", "FFE without T1 (GRE / T2*)", False
     if t1:
-        return "T1", "description matches t1/t1w/mprage/tfe", True
+        return "T1", "description matches t1/t1w/mprage/tfe/bravo/fspgr", True
     if t2:
         return "T2", "description matches t2/t2w/tse", True
     return "other", "no FLAIR/T1/T1c/T2 tokens", False
@@ -248,7 +250,11 @@ def _public_series(record: dict) -> dict:
 
 
 def _classify_header(desc, protocol, bolus, image_type) -> tuple[str, str, bool]:
-    modality, rule, usable = guess_modality(desc, protocol, bolus, image_type=image_type)
+    # Prefer SeriesDescription (+ bolus). ProtocolName often repeats a study-level
+    # token such as SWI and would otherwise override PCA venography or T2 TSE FS.
+    modality, rule, usable = guess_modality(desc, bolus, image_type=image_type)
+    if modality == "other" and protocol:
+        modality, rule, usable = guess_modality(desc, protocol, bolus, image_type=image_type)
     if bolus and modality == "T1":
         return "T1c", "ContrastBolusAgent set on T1", True
     return modality, rule, usable

@@ -358,6 +358,14 @@ select {
 #job-stages li.is-error { color: #d64545; }
 #job-stages li.is-skipped { color: #8a97a6; }
 
+#anatomy-method-note {
+  margin: 0 0 12px;
+  padding: 8px;
+  background: #eef4fb;
+  color: #1c3a5f;
+  border: 1px solid #b7c9de;
+}
+
 #anatomy-warning {
   margin: 0 0 12px;
   padding: 8px;

@@ -14,7 +14,7 @@ import json
 import logging
 import shutil
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import nibabel as nib
@@ -242,16 +242,17 @@ def _legend_volumes(structures) -> dict[str, float]:
     }
 
 
-def _record_grey_matter_total(structures, exported, parc, tumor_label, affine):
+def _record_grey_matter_total(structures, exported, parc, tumor_label, affine, *, anatomy_method=None):
     """Volume-only Tissue row: cortical GM + deep GM."""
     from recon.anatomy import grey_matter_total_volume_mask
 
+    export_spec = _with_anatomy_source(GREY_MATTER_TOTAL, anatomy_method)
     volume = _voxel_cm3(grey_matter_total_volume_mask(parc, tumor_label), affine)
     payload = _catalog_extra(
         GREY_MATTER_TOTAL,
         volume_cm3=volume,
         color=list(rgba(GREY_MATTER_TOTAL)),
-        source=GREY_MATTER_TOTAL.source,
+        source=export_spec.source,
         file=None,
         volume_only=True,
         glass=False,
@@ -268,12 +269,12 @@ def _record_grey_matter_total(structures, exported, parc, tumor_label, affine):
         ordered[GREY_MATTER_TOTAL.mesh_name] = payload
     structures.clear()
     structures.update(ordered)
-    if GREY_MATTER_TOTAL not in exported:
-        wm_at = next((i for i, spec in enumerate(exported) if spec is WHITE_MATTER), None)
+    if not any(item.mesh_name == GREY_MATTER_TOTAL.mesh_name for item in exported):
+        wm_at = next((i for i, item in enumerate(exported) if item.mesh_name == WHITE_MATTER.mesh_name), None)
         if wm_at is None:
-            exported.append(GREY_MATTER_TOTAL)
+            exported.append(export_spec)
         else:
-            exported.insert(wm_at + 1, GREY_MATTER_TOTAL)
+            exported.insert(wm_at + 1, export_spec)
 
 
 def _voxel_cm3(mask, affine) -> float:
@@ -299,6 +300,25 @@ def mesh_glb_filename(name: str) -> str:
 
 def mesh_glb_path(out_dir, name: str) -> Path:
     return Path(out_dir) / mesh_glb_filename(name)
+
+
+def anatomy_structure_source(spec, anatomy_method=None) -> str:
+    """Manifest ``source`` for an anatomy mesh given the method that ran.
+
+    MNI-atlas cases stamp every SynthSeg-catalogued structure as
+    ``atlas-estimated``. Lobes stay ``atlas-estimated`` under either method.
+    """
+    source = spec.source
+    if anatomy_method == "mni-atlas" and source == "synthseg":
+        return "atlas-estimated"
+    return source
+
+
+def _with_anatomy_source(spec, anatomy_method=None):
+    resolved = anatomy_structure_source(spec, anatomy_method)
+    if resolved == spec.source:
+        return spec
+    return replace(spec, source=resolved)
 
 
 def _structure_record(name, mesh, mask, affine, color, source, proximity=None, extra=None):
@@ -345,12 +365,34 @@ def _find_synthseg(case_dir: Path | None, explicit):
     return hits[0] if hits else None
 
 
-def _write_canonical_t1(case_dir: Path, dest: Path):
+def _anatomy_io_role(anatomy_input: str) -> str:
+    """Map preprocess role ``t1``/``t1c`` to ``recon.io`` volume suffix."""
+    return "t1c" if anatomy_input == "t1c" else "t1n"
+
+
+def resolve_anatomy_input(case_dir: Path | None) -> tuple[str, str]:
+    """Return ``(anatomy_input, reason)`` from ``preprocess.json`` when present."""
+    if case_dir is None:
+        return "t1", "no case directory; using plain T1"
+    meta_path = Path(case_dir) / "preprocess.json"
+    if not meta_path.is_file():
+        return "t1", "no preprocess.json; using plain T1"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "t1", "unreadable preprocess.json; using plain T1"
+    from recon.ingest_real import choose_anatomy_input
+
+    return choose_anatomy_input(meta)
+
+
+def _write_canonical_t1(case_dir: Path, dest: Path, *, anatomy_input: str = "t1"):
     from recon.io import _find_volume, _read_canonical
 
     from recon.postprocess import foreground
 
-    raw, affine = _read_canonical(_find_volume(case_dir, "t1n"), label=False)
+    role = _anatomy_io_role(anatomy_input)
+    raw, affine = _read_canonical(_find_volume(case_dir, role), label=False)
     raw = np.asarray(raw, dtype=np.float32)
     # ANTs and the atlas mask need a zero background; normalized copies have a negative one.
     raw = np.where(foreground(raw), raw - raw.min(), 0.0).astype(np.float32)
@@ -365,8 +407,22 @@ def _scan_shape(case) -> tuple[int, ...]:
     return tuple(int(v) for v in image.shape[1:])
 
 
-def _record_mesh(scene, out_dir, structures, exported, spec, mesh, mask, affine, *, proximity=None, extra=None):
+def _record_mesh(
+    scene,
+    out_dir,
+    structures,
+    exported,
+    spec,
+    mesh,
+    mask,
+    affine,
+    *,
+    proximity=None,
+    extra=None,
+    anatomy_method=None,
+):
     """Paint, parent the node by anatomical group, and store name, color, and centroid."""
+    export_spec = _with_anatomy_source(spec, anatomy_method)
     color = rgba(spec)
     _paint(mesh, color)
     _add_mesh(scene, out_dir, spec.mesh_name, mesh, spec.group)
@@ -379,15 +435,15 @@ def _record_mesh(scene, out_dir, structures, exported, spec, mesh, mask, affine,
         mask,
         affine,
         color,
-        spec.source,
+        export_spec.source,
         proximity=proximity,
         extra=payload,
     )
     for index, item in enumerate(exported):
         if item.mesh_name == spec.mesh_name:
-            exported[index] = spec
+            exported[index] = export_spec
             return
-    exported.append(spec)
+    exported.append(export_spec)
 
 
 def _remove_structure(scene, out_dir, structures, exported, name):
@@ -433,12 +489,14 @@ def _raw_parcellation(
     tumor_label=None,
     clock=None,
     anatomy_method=None,
+    anatomy_input: str = "t1",
 ):
     """SynthSeg labels on the scan grid, before the tumor is removed.
 
     A hash-keyed cache under ``caches/anatomy/<hash>/`` stores the painted
-    parcellation (filename includes the method) so a second open of the same
-    files skips SynthSeg and ANTs without mixing atlas and SynthSeg results.
+    parcellation (filename includes the method, and ``_t1c`` when anatomy
+    runs on contrast T1) so a second open of the same files skips SynthSeg
+    and ANTs without mixing atlas/SynthSeg or T1/T1c results.
     """
     from recon.anatomy import (
         ANATOMY_RESULT_SYNTHSEG,
@@ -452,6 +510,7 @@ def _raw_parcellation(
 
     method = normalize_anatomy_method(anatomy_method)
     planned = planned_anatomy_result(method, device)
+    input_key = "t1c" if anatomy_input == "t1c" else "t1"
 
     def _stage(name: str) -> None:
         if progress is not None:
@@ -463,7 +522,9 @@ def _raw_parcellation(
                 clock.start("lobe_warp")
 
     cache_dir = default_anatomy_cache_root() / file_hash if file_hash else None
-    cache_path = cache_dir / anatomy_cache_filename(planned) if cache_dir else None
+    cache_path = (
+        cache_dir / anatomy_cache_filename(planned, input_key) if cache_dir else None
+    )
     cached = _load_cached_parcellation(cache_path, shape)
     if cached is not None:
         _stage("Anatomy")
@@ -500,8 +561,8 @@ def _raw_parcellation(
     tumor = np.zeros(shape, dtype=np.uint8) if tumor_label is None else np.asarray(tumor_label)
     cache_key = file_hash or case_id
     with tempfile.TemporaryDirectory() as tmp:
-        t1_ras = Path(tmp) / "t1n_ras.nii.gz"
-        _write_canonical_t1(case_dir, t1_ras)
+        t1_ras = Path(tmp) / f"{input_key}_ras.nii.gz"
+        _write_canonical_t1(case_dir, t1_ras, anatomy_input=input_key)
 
         def on_lobes():
             _stage("Lobes")
@@ -516,10 +577,17 @@ def _raw_parcellation(
             anatomy_method=method,
         )
     if cache_dir is not None:
-        _store_cached_parcellation(cache_dir / anatomy_cache_filename(used), raw, affine)
+        _store_cached_parcellation(
+            cache_dir / anatomy_cache_filename(used, input_key), raw, affine
+        )
         (cache_dir / "meta.json").write_text(
             json.dumps(
-                {"hash": file_hash, "case_id": case_id, "anatomy_method": used},
+                {
+                    "hash": file_hash,
+                    "case_id": case_id,
+                    "anatomy_method": used,
+                    "anatomy_input": input_key,
+                },
                 indent=2,
             ),
             encoding="utf-8",
@@ -729,6 +797,8 @@ def _export_scene(
 
     anatomy_warning = None
     anatomy_method_used = None
+    anatomy_input = None
+    anatomy_input_reason = None
     file_hash = None
     progress.set_stage("Loading")
     if isinstance(case, (str, Path)):
@@ -798,6 +868,7 @@ def _export_scene(
 
     clock.start("synthseg")
     if anatomy:
+        anatomy_input, anatomy_input_reason = resolve_anatomy_input(case_dir)
         try:
             raw_parc, anatomy_method_used = _raw_parcellation(
                 case,
@@ -812,6 +883,7 @@ def _export_scene(
                 tumor_label=label,
                 clock=clock,
                 anatomy_method=anatomy_method,
+                anatomy_input=anatomy_input,
             )
         except Exception as exc:
             anatomy_warning = f"Anatomy unavailable: {exc}"
@@ -875,8 +947,11 @@ def _export_scene(
                 mask,
                 affine,
                 extra=extra,
+                anatomy_method=anatomy_method_used,
             )
-        _record_grey_matter_total(structures, exported, raw_parc, label, affine)
+        _record_grey_matter_total(
+            structures, exported, raw_parc, label, affine, anatomy_method=anatomy_method_used
+        )
         cleaned, anatomy_removed = excise_tumor(raw_parc, label)
         save_anatomy_seg(cleaned, reference, out_dir / "anatomy_seg.nii.gz", out_dir / "pred_seg.nii.gz")
         raw_labels = np.rint(np.squeeze(np.asarray(raw_parc))).astype(np.int16)
@@ -904,6 +979,7 @@ def _export_scene(
                 mask,
                 affine,
                 extra=extra,
+                anatomy_method=anatomy_method_used,
             )
         if case_dir is not None:
             try:
@@ -992,6 +1068,8 @@ def _export_scene(
         "blood_products_note": BLOOD_NOTE if BLOOD_MESH in structures else None,
         "anatomy_warning": anatomy_warning,
         "anatomy_method": anatomy_method_used,
+        "anatomy_input": anatomy_input,
+        "anatomy_input_reason": anatomy_input_reason,
         "stage_times_s": clock.as_dict(),
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -1047,6 +1125,7 @@ def rebuild_glass_meshes(out_dir):
         if "volume_cm3" in previous:
             structures[name]["volume_cm3"] = previous["volume_cm3"]
 
+    anatomy_method_used = manifest.get("anatomy_method")
     print("meshing grey matter, white matter, cerebellum, and brainstem", flush=True)
     for structure, mask, mesh in iter_glass_shells(parc, label, affine):
         faces = 0 if mesh is None else len(mesh.faces)
@@ -1065,8 +1144,11 @@ def rebuild_glass_meshes(out_dir):
             mask,
             affine,
             extra=extra,
+            anatomy_method=anatomy_method_used,
         )
-    _record_grey_matter_total(structures, exported, parc, label, affine)
+    _record_grey_matter_total(
+        structures, exported, parc, label, affine, anatomy_method=anatomy_method_used
+    )
 
     for structure, mask, mesh in mesh_parcellation_labels(cleaned, affine):
         previous = manifest.get("structures", {}).get(structure.mesh_name, {})
@@ -1084,6 +1166,7 @@ def rebuild_glass_meshes(out_dir):
                 "hidden_by_default": True,
                 "removed_voxels": int(previous.get("removed_voxels", 0)),
             },
+            anatomy_method=anatomy_method_used,
         )
 
     case_dir = manifest.get("case_dir")

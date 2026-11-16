@@ -428,6 +428,7 @@ async function startViewer(id) {
   await catalogReady;
   const manifest = await fetch(`/api/cases/${encodeURIComponent(id)}/manifest.json?v=anatomy1`).then(readJson);
   document.querySelector("#case-title").textContent = manifest.case_id || id;
+  showAnatomyMethodNote(manifest);
   showAnatomyWarning(manifest);
   buildPanel(manifest);
   buildProximity(manifest);
@@ -694,6 +695,12 @@ function structureGroup(entry) {
   if (entry.source === "atlas-estimated") return "Tracts";
   if (entry.source === "model") return "Tumor";
   return "Anatomy";
+}
+
+function showAnatomyMethodNote(manifest) {
+  const el = document.querySelector("#anatomy-method-note");
+  if (!el) return;
+  el.hidden = manifest?.anatomy_method !== "mni-atlas";
 }
 
 function showAnatomyWarning(manifest) {

@@ -554,11 +554,20 @@ def planned_anatomy_result(method: str | None, device=None) -> str:
     return ANATOMY_RESULT_SYNTHSEG
 
 
-def anatomy_cache_filename(result_method: str) -> str:
-    """``parc_raw_synthseg.nii.gz`` or ``parc_raw_mni-atlas.nii.gz``."""
+def anatomy_cache_filename(result_method: str, anatomy_input: str = "t1") -> str:
+    """``parc_raw_synthseg.nii.gz`` / ``parc_raw_mni-atlas_t1c.nii.gz``.
+
+    Plain T1 keeps the historical filename; T1c appends ``_t1c`` so a thin
+    contrast volume never reuses a thick-T1 cache entry.
+    """
     if result_method not in (ANATOMY_RESULT_SYNTHSEG, ANATOMY_RESULT_ATLAS):
         raise ValueError(f"Unknown anatomy result method: {result_method!r}")
-    return f"parc_raw_{result_method}.nii.gz"
+    key = (anatomy_input or "t1").strip().lower()
+    if key not in ("t1", "t1c"):
+        raise ValueError(f"anatomy_input must be t1 or t1c, got {anatomy_input!r}")
+    if key == "t1":
+        return f"parc_raw_{result_method}.nii.gz"
+    return f"parc_raw_{result_method}_t1c.nii.gz"
 
 
 def cortical_parcellation_supported(model) -> bool:

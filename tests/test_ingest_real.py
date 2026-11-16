@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from recon.ingest_real import (
+    choose_anatomy_input,
     choose_channels,
     choose_reference,
     coverage_reject_reasons,
@@ -235,6 +236,57 @@ def test_prefers_axial_then_thinnest_after_fov_filter():
     assert picked["series_description"] == "eT2W_TSE 3mm"
 
 
+def test_choose_anatomy_input_prefers_thin_3d_t1c_when_t1_is_thick():
+    role, reason = choose_anatomy_input(
+        {
+            "series_chosen": {
+                "t1": {"acquisition": "2D", "slice_thickness_mm": 5.0},
+                "t1c": {"acquisition": "3D", "slice_thickness_mm": 1.2},
+            }
+        }
+    )
+    assert role == "t1c"
+    assert "1.2" in reason
+
+
+def test_choose_anatomy_input_keeps_thin_3d_t1():
+    role, reason = choose_anatomy_input(
+        {
+            "series_chosen": {
+                "t1": {"acquisition": "3D", "slice_thickness_mm": 1.0},
+                "t1c": {"acquisition": "3D", "slice_thickness_mm": 1.2},
+            }
+        }
+    )
+    assert role == "t1"
+    assert "thin enough" in reason
+
+
+def test_choose_anatomy_input_keeps_t1_when_t1c_is_thick():
+    role, _reason = choose_anatomy_input(
+        {
+            "series_chosen": {
+                "t1": {"acquisition": "2D", "slice_thickness_mm": 5.0},
+                "t1c": {"acquisition": "3D", "slice_thickness_mm": 5.0},
+            }
+        }
+    )
+    assert role == "t1"
+
+
+def test_choose_anatomy_input_missing_thickness_gives_t1():
+    role, reason = choose_anatomy_input(
+        {
+            "series_chosen": {
+                "t1": {"acquisition": "2D", "slice_thickness_mm": None},
+                "t1c": {"acquisition": "3D", "slice_thickness_mm": 1.2},
+            }
+        }
+    )
+    assert role == "t1"
+    assert "missing" in reason
+
+
 def test_study_is_done_requires_json_mask_png_and_chosen_volumes(tmp_path):
     ready = tmp_path / "04_ready"
     ready.mkdir()
@@ -258,6 +310,10 @@ if __name__ == "__main__":
 
     test_reference_prefers_thinnest_3d_t1_over_t1c()
     test_reference_falls_back_t1c_then_2d_t1_then_flair()
+    test_choose_anatomy_input_prefers_thin_3d_t1c_when_t1_is_thick()
+    test_choose_anatomy_input_keeps_thin_3d_t1()
+    test_choose_anatomy_input_keeps_t1_when_t1c_is_thick()
+    test_choose_anatomy_input_missing_thickness_gives_t1()
     test_pick_channel_ignores_unusable_and_missing_source()
     test_public_series_has_no_paths_or_ids()
     test_strip_nifti_identity_clears_header_text(Path(tempfile.mkdtemp()))

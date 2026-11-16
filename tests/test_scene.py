@@ -138,6 +138,9 @@ def test_build_scene_exports_named_nodes_and_original_space():
         assert total["group"] == "Tissue"
         assert total["legend"] == "Grey matter total"
         assert total["volume_cm3"] >= cortex["volume_cm3"] + manifest["structures"]["Right Cortex"]["volume_cm3"] - 1e-6
+        assert manifest["anatomy_method"] == "synthseg"
+        assert manifest["anatomy_input"] == "t1"
+        assert "preprocess.json" in (manifest.get("anatomy_input_reason") or "")
         assert manifest["structures"]["Brainstem"]["source"] == "synthseg"
         assert manifest["structures"]["Brainstem"]["legend"] == "Brainstem"
         assert manifest["structures"]["Brainstem"]["group"] == "Brainstem & Cerebellum"
@@ -483,6 +486,176 @@ def test_mesh_glb_filename_sanitizes_slash_for_windows():
         assert name in scene.geometry
 
 
+def _tiny_case(root: Path, case_id: str, parc: np.ndarray):
+    shape = parc.shape
+    affine = np.eye(4, dtype=np.float64)
+    case_dir = root / case_id
+    brain = np.ones(shape, dtype=np.float32)
+    for suffix in ("t2f", "t1n", "t1c", "t2w"):
+        _write(case_dir / f"{suffix}.nii.gz", brain, affine)
+    image = np.ones((4,) + shape, dtype=np.float32)
+    probs = np.zeros((3,) + shape, dtype=np.float32)
+    probs[2, 2:6, 2:6, 2:6] = 0.95
+    return {
+        "image": image,
+        "affine": affine,
+        "case_id": case_id,
+        "case_dir": case_dir,
+        "probs": probs,
+        "synthseg": parc,
+    }, PostConfig(
+        threshold_et=0.5,
+        threshold_tc=0.5,
+        threshold_wt=0.5,
+        min_voxels_et=0,
+        min_voxels_tc=0,
+        min_voxels_wt=0,
+        et_min_voxels=0,
+        brain_closing_iterations=1,
+    )
+
+
+def test_manifest_atlas_run_uses_atlas_estimated_sources():
+    from recon.labels import anatomy
+
+    shape = (14, 14, 14)
+    parc = np.zeros(shape, dtype=np.int16)
+    parc[1:5, 1:5, 1:5] = 16
+    parc[1:7, 7:13, 1:7] = 101
+    parc[7:13, 1:7, 1:7] = 3
+    parc[7:13, 7:13, 1:7] = 42
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        case, config = _tiny_case(root, "atlas_src", parc)
+        import recon.scene as scene_mod
+
+        original = scene_mod._raw_parcellation
+
+        def fake_raw(*args, **kwargs):
+            return parc, "mni-atlas"
+
+        scene_mod._raw_parcellation = fake_raw
+        try:
+            manifest = build_scene(case, anatomy=True, output_root=root / "out", config=config)
+        finally:
+            scene_mod._raw_parcellation = original
+
+    assert manifest["anatomy_method"] == "mni-atlas"
+    assert manifest["structures"]["Brainstem"]["source"] == "atlas-estimated"
+    assert manifest["structures"]["Left Cortex"]["source"] == "atlas-estimated"
+    assert anatomy(101).source == "atlas-estimated"
+    legend = {entry["name"]: entry for entry in manifest["legend"]}
+    assert legend["Brainstem"]["source"] == "atlas-estimated"
+    assert legend["Cortical grey matter (left)"]["source"] == "atlas-estimated"
+
+
+def test_manifest_synthseg_run_keeps_synthseg_and_atlas_lobes():
+    from recon.labels import anatomy, legend_entries
+
+    shape = (14, 14, 14)
+    parc = np.zeros(shape, dtype=np.int16)
+    parc[1:5, 1:5, 1:5] = 16
+    parc[1:7, 7:13, 1:7] = 101
+    parc[7:13, 1:7, 1:7] = 3
+    parc[7:13, 7:13, 1:7] = 42
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        case, config = _tiny_case(root, "synth_src", parc)
+        import recon.scene as scene_mod
+
+        original = scene_mod._raw_parcellation
+
+        def fake_raw(*args, **kwargs):
+            return parc, "synthseg"
+
+        scene_mod._raw_parcellation = fake_raw
+        try:
+            manifest = build_scene(case, anatomy=True, output_root=root / "out", config=config)
+        finally:
+            scene_mod._raw_parcellation = original
+
+    assert manifest["anatomy_method"] == "synthseg"
+    assert manifest["structures"]["Brainstem"]["source"] == "synthseg"
+    assert manifest["structures"]["Left Cortex"]["source"] == "synthseg"
+    assert anatomy(101).source == "atlas-estimated"
+    lobe_row = legend_entries([anatomy(101)])[0]
+    assert lobe_row["source"] == "atlas-estimated"
+    legend = {entry["name"]: entry for entry in manifest["legend"]}
+    assert legend["Brainstem"]["source"] == "synthseg"
+
+
+def test_resolve_anatomy_input_without_preprocess_json_is_t1(tmp_path):
+    from recon.scene import resolve_anatomy_input
+
+    case_dir = tmp_path / "BraTS_style"
+    case_dir.mkdir()
+    role, reason = resolve_anatomy_input(case_dir)
+    assert role == "t1"
+    assert "preprocess.json" in reason
+
+
+def test_resolve_anatomy_input_uses_preprocess_for_thick_t1(tmp_path):
+    from recon.scene import resolve_anatomy_input
+
+    case_dir = tmp_path / "study"
+    case_dir.mkdir()
+    (case_dir / "preprocess.json").write_text(
+        json.dumps(
+            {
+                "series_chosen": {
+                    "t1": {"acquisition": "2D", "slice_thickness_mm": 5.0},
+                    "t1c": {"acquisition": "3D", "slice_thickness_mm": 1.2},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    role, reason = resolve_anatomy_input(case_dir)
+    assert role == "t1c"
+    assert "1.2" in reason
+
+
+def test_backfill_anatomy_method_dry_run_writes_nothing():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_anatomy_method", ROOT / "scripts" / "backfill_anatomy_method.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        atlas_case = root / "atlas_case"
+        review_case = root / "review_case"
+        atlas_case.mkdir()
+        review_case.mkdir()
+        atlas_manifest = {
+            "case_id": "atlas_case",
+            "structures": {"Left Cortex": {"source": "synthseg"}, "Left Thalamus": {"source": "synthseg"}},
+        }
+        review_manifest = {
+            "case_id": "review_case",
+            "structures": {"Brainstem": {"source": "synthseg"}, "Left Hippocampus": {"source": "synthseg"}},
+        }
+        atlas_path = atlas_case / "manifest.json"
+        review_path = review_case / "manifest.json"
+        atlas_path.write_text(json.dumps(atlas_manifest), encoding="utf-8")
+        review_path.write_text(json.dumps(review_manifest), encoding="utf-8")
+        before_atlas = atlas_path.read_text(encoding="utf-8")
+        before_review = review_path.read_text(encoding="utf-8")
+
+        assert module.main(["--output", str(root), "--dry-run"]) == 0
+        assert atlas_path.read_text(encoding="utf-8") == before_atlas
+        assert review_path.read_text(encoding="utf-8") == before_review
+
+        assert module.main(["--output", str(root)]) == 0
+        updated = json.loads(atlas_path.read_text(encoding="utf-8"))
+        assert updated["anatomy_method"] == "mni-atlas"
+        untouched = json.loads(review_path.read_text(encoding="utf-8"))
+        assert "anatomy_method" not in untouched
+
+
 if __name__ == "__main__":
     test_build_scene_exports_named_nodes_and_original_space()
     test_anatomy_is_built_before_the_tumor_and_overlap_is_remeshed()
@@ -493,4 +666,9 @@ if __name__ == "__main__":
     test_anatomy_cache_skips_synthseg_on_reopen()
     test_scene_is_up_to_date_requires_tissue_or_warning()
     test_mesh_glb_filename_sanitizes_slash_for_windows()
+    test_manifest_atlas_run_uses_atlas_estimated_sources()
+    test_manifest_synthseg_run_keeps_synthseg_and_atlas_lobes()
+    test_resolve_anatomy_input_without_preprocess_json_is_t1(Path(tempfile.mkdtemp()))
+    test_resolve_anatomy_input_uses_preprocess_for_thick_t1(Path(tempfile.mkdtemp()))
+    test_backfill_anatomy_method_dry_run_writes_nothing()
     print("scene ok")

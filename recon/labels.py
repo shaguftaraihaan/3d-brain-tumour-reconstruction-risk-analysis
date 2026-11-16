@@ -240,6 +240,7 @@ def _midline(
     *,
     key: str | None = None,
     opacity: float = _ANATOMY_OPACITY,
+    source: str = "synthseg",
 ) -> None:
     _add(
         label_id=label_id,
@@ -249,7 +250,7 @@ def _midline(
         rgb=rgb,
         legend_name=full_name,
         side=None,
-        source="synthseg",
+        source=source,
         mesh_name=full_name,
         key=key or full_name.lower().replace(" ", "_"),
         opacity=opacity,
@@ -303,6 +304,7 @@ for _lobe_id, _lobe_name, _lobe_short in (
         _LOBE_COLORS[_lobe_name],
         key=_lobe_name.lower().replace(" ", "_"),
         opacity=_CORTEX_OPACITY,
+        source="atlas-estimated",
     )
 
 # Desikan-Killiany. ctx-lh is 1000+offset and ctx-rh is 2000+offset.

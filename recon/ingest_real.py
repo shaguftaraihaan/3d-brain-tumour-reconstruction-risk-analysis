@@ -265,6 +265,50 @@ def choose_reference(chosen: dict[str, dict]) -> tuple[str, str]:
     raise RuntimeError("No reference sequence (need 3D T1, T1c, 2D T1, or FLAIR)")
 
 
+def _series_thickness_mm(series: dict | None, *, role: str, meta: dict) -> float | None:
+    """Slice thickness from ``series_chosen`` or ``original_thickness_mm``."""
+    if series:
+        thick = series.get("slice_thickness_mm")
+        try:
+            if thick is not None:
+                return float(thick)
+        except (TypeError, ValueError):
+            pass
+    originals = meta.get("original_thickness_mm") or {}
+    thick = originals.get(role)
+    try:
+        return float(thick) if thick is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def choose_anatomy_input(meta: dict) -> tuple[str, str]:
+    """Pick the contrast for SynthSeg / atlas warps from ``preprocess.json``.
+
+    Returns ``("t1", reason)`` or ``("t1c", reason)``. Prefer thin 3D T1c when
+    the plain T1 is thicker than 2.0 mm and T1c is 3D at most 1.6 mm. Missing
+    thickness falls back to plain T1.
+    """
+    chosen = meta.get("series_chosen") or {}
+    t1 = chosen.get("t1") or {}
+    t1c = chosen.get("t1c") or {}
+    t1_mm = _series_thickness_mm(t1, role="t1", meta=meta)
+    t1c_mm = _series_thickness_mm(t1c, role="t1c", meta=meta)
+    if t1_mm is None or t1c_mm is None:
+        return "t1", "missing slice thickness; using plain T1"
+    t1c_acq = (t1c.get("acquisition") or "").upper()
+    if t1_mm > 2.0 and t1c_acq == "3D" and t1c_mm <= 1.6:
+        return (
+            "t1c",
+            f"plain T1 is {t1_mm:g} mm; using 3D T1c at {t1c_mm:g} mm",
+        )
+    if t1_mm <= 2.0:
+        return "t1", f"plain T1 is {t1_mm:g} mm (thin enough)"
+    if t1c_acq != "3D":
+        return "t1", f"T1c is not 3D (acquisition={t1c.get('acquisition') or 'unknown'})"
+    return "t1", f"T1c is {t1c_mm:g} mm (thicker than 1.6 mm)"
+
+
 def public_series(item: dict) -> dict:
     thick = item.get("slice_thickness_mm")
     try:
