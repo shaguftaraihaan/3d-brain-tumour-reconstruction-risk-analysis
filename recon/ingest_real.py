@@ -43,6 +43,12 @@ CLI_TIERS = ("FULL", "NO_CONTRAST", "FLAIR_T2_ONLY", "ALL")
 MODALITY_ROLES = ("FLAIR", "T1", "T1c", "T2")
 ROLE_FILE = {"FLAIR": "flair", "T1": "t1", "T1c": "t1c", "T2": "t2"}
 FILE_ROLE = {value: key for key, value in ROLE_FILE.items()}
+VESSEL_MODALITIES = ("MRA", "VEN")
+VESSEL_ROLE = {"MRA": "mra", "VEN": "ven"}
+VESSEL_OUT_NAME = {"MRA": "vessels_mra.nii.gz", "VEN": "vessels_ven.nii.gz"}
+VESSEL_SPACING_MM = 0.5
+VESSEL_MARGIN_MM = 5.0
+VESSEL_MAX_THICKNESS_MM = 3.0
 ISO_MM = (1.0, 1.0, 1.0)
 MI_ACCEPT = -0.15
 MOVING_MASK_DILATE_MM = 10.0
@@ -238,6 +244,35 @@ def choose_channels(
         if item is not None:
             chosen[modality] = item
     return chosen
+
+
+def pick_vessel_series(series_list: list[dict], modality: str) -> dict | None:
+    """Pick one 3D thin MRA/VEN series. MIP reconstructions and thick slabs are dropped."""
+    wanted = str(modality or "").strip().upper()
+    if wanted not in VESSEL_MODALITIES:
+        raise ValueError(f"vessel modality must be MRA or VEN, got {modality!r}")
+    candidates = []
+    for item in series_list or []:
+        if item.get("modality") != wanted:
+            continue
+        if not item.get("source_path"):
+            continue
+        desc = str(item.get("series_description") or "").strip()
+        if desc.upper().startswith("MIP"):
+            continue
+        if (item.get("acquisition") or "").upper() != "3D":
+            continue
+        thick = item.get("slice_thickness_mm")
+        try:
+            thickness = float(thick) if thick is not None else None
+        except (TypeError, ValueError):
+            thickness = None
+        if thickness is None or thickness > VESSEL_MAX_THICKNESS_MM:
+            continue
+        candidates.append(item)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(item.get("n_slices") or 0))
 
 
 def mask_si_mm(mask_path: Path) -> float | None:
@@ -839,6 +874,184 @@ def _convert_n4(item: dict, work: Path, role: str, conversion: dict[str, str], n
     native[role] = n4_path
 
 
+def _direction_matrix(affine: np.ndarray) -> np.ndarray:
+    """Unit-column direction from a voxel-to-world affine."""
+    from nibabel.affines import voxel_sizes
+
+    linear = np.asarray(affine, dtype=np.float64)[:3, :3]
+    zooms = np.asarray(voxel_sizes(affine), dtype=np.float64)
+    direction = np.zeros((3, 3), dtype=np.float64)
+    for axis in range(3):
+        scale = float(zooms[axis]) if float(zooms[axis]) != 0 else 1.0
+        direction[:, axis] = linear[:, axis] / scale
+    return direction
+
+
+def resample_vessel_half_mm(registered_path: Path, reference_path: Path, dest: Path) -> Path:
+    """0.5 mm grid with the reference orientation/origin, cropped to vessel FOV + 5 mm."""
+    from nibabel.processing import resample_from_to
+
+    reference = nib.load(str(reference_path))
+    registered = nib.load(str(registered_path))
+    ref_affine = np.asarray(reference.affine, dtype=np.float64)
+    vessel_affine = np.asarray(registered.affine, dtype=np.float64)
+    data = np.asarray(registered.get_fdata(dtype=np.float32))
+    mask = np.isfinite(data) & (data != 0)
+    if not np.any(mask):
+        mask = np.isfinite(data)
+    coords = np.argwhere(mask)
+    if coords.size == 0:
+        raise RuntimeError("Registered vessel volume is empty")
+    ijk_min = coords.min(axis=0).astype(np.float64)
+    ijk_max = coords.max(axis=0).astype(np.float64)
+    world_corners = []
+    for i in (ijk_min[0], ijk_max[0]):
+        for j in (ijk_min[1], ijk_max[1]):
+            for k in (ijk_min[2], ijk_max[2]):
+                world_corners.append(vessel_affine @ np.array([i, j, k, 1.0], dtype=np.float64))
+    world = np.asarray(world_corners)[:, :3]
+    lo = world.min(axis=0) - VESSEL_MARGIN_MM
+    hi = world.max(axis=0) + VESSEL_MARGIN_MM
+
+    direction = _direction_matrix(ref_affine)
+    spacing = float(VESSEL_SPACING_MM)
+    lattice = np.eye(4, dtype=np.float64)
+    lattice[:3, :3] = direction * spacing
+    lattice[:3, 3] = ref_affine[:3, 3]
+    inv_lattice = np.linalg.inv(lattice)
+    ijk_lo = np.floor((inv_lattice @ np.append(lo, 1.0))[:3]).astype(int)
+    ijk_hi = np.ceil((inv_lattice @ np.append(hi, 1.0))[:3]).astype(int)
+    shape = tuple(int(max(1, (ijk_hi[axis] - ijk_lo[axis] + 1))) for axis in range(3))
+    crop_affine = lattice.copy()
+    crop_affine[:3, 3] = (lattice @ np.array([ijk_lo[0], ijk_lo[1], ijk_lo[2], 1.0], dtype=np.float64))[:3]
+
+    resampled = resample_from_to(
+        registered,
+        (shape, crop_affine),
+        order=1,
+        cval=0.0,
+    )
+    out = np.asarray(resampled.dataobj, dtype=np.float32)
+    _save_nifti(out, crop_affine, dest, dtype=np.float32)
+    strip_nifti_identity(dest)
+    return dest
+
+
+def _vessel_reject_record(*, modality: str, item: dict | None, reason: str, score=None) -> dict:
+    role = VESSEL_ROLE[modality]
+    published = public_series(item) if item is not None else {}
+    return {
+        "series_description": published.get("series_description"),
+        "slice_thickness_mm": published.get("slice_thickness_mm"),
+        "registration_score": None if score is None else float(score),
+        "accepted": False,
+        "file": None,
+        "reason": reason,
+        "modality": role,
+    }
+
+
+def _vessel_accept_record(*, modality: str, item: dict, score, filename: str) -> dict:
+    published = public_series(item)
+    return {
+        "series_description": published.get("series_description"),
+        "slice_thickness_mm": published.get("slice_thickness_mm"),
+        "registration_score": None if score is None else float(score),
+        "accepted": True,
+        "file": filename,
+        "modality": VESSEL_ROLE[modality],
+    }
+
+
+def process_vessels(
+    series: list[dict],
+    *,
+    reference_path: Path,
+    mask_path: Path,
+    work: Path,
+    ready: Path,
+) -> dict:
+    """Convert, rigidly register, and export MRA/VEN at 0.5 mm when accepted."""
+    vessels: dict[str, dict] = {}
+    for modality in VESSEL_MODALITIES:
+        role = VESSEL_ROLE[modality]
+        out_name = VESSEL_OUT_NAME[modality]
+        out_path = ready / out_name
+        if out_path.is_file():
+            out_path.unlink()
+        item = pick_vessel_series(series, modality)
+        if item is None:
+            vessels[role] = _vessel_reject_record(
+                modality=modality,
+                item=None,
+                reason="no suitable series",
+            )
+            continue
+        raw = work / f"raw_{role}.nii.gz"
+        print(f"  convert {role}", flush=True)
+        convert_series(item, raw, role=role)
+        _reorient_ras(raw)
+        reg = work / f"reg_{role}.nii.gz"
+        print(f"  rigid register {role} -> reference (header init, masked, multi-start)", flush=True)
+        result = rigid_register_to_reference(
+            raw, reference_path, reg, work, role, fixed_mask_path=mask_path
+        )
+        score = result.get("value")
+        if result.get("failed") or not mi_accepted(score):
+            reason = (
+                f"registration MI {score} did not pass threshold {MI_ACCEPT}"
+                if score is not None
+                else f"registration MI unavailable; threshold {MI_ACCEPT}"
+            )
+            print(f"  reject {role}: {reason}", flush=True)
+            vessels[role] = _vessel_reject_record(
+                modality=modality, item=item, reason=reason, score=score
+            )
+            continue
+        print(f"  resample {role} to {VESSEL_SPACING_MM} mm (FOV + {VESSEL_MARGIN_MM:g} mm)", flush=True)
+        resample_vessel_half_mm(reg, reference_path, out_path)
+        vessels[role] = _vessel_accept_record(
+            modality=modality, item=item, score=score, filename=out_name
+        )
+    return vessels
+
+
+def preprocess_vessels_only(study_id: str, payload: dict, *, out_root: Path) -> dict:
+    """Add vessel volumes to an already-preprocessed study without redoing FLAIR/T1/T1c/T2."""
+    study_dir = out_root / study_id
+    ready = study_dir / "04_ready"
+    if not study_is_done(ready):
+        raise RuntimeError("main channels are not ready; run full preprocess first")
+    meta_path = ready / "preprocess.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    ref_role = (meta.get("reference") or {}).get("role")
+    if not ref_role:
+        raise RuntimeError("preprocess.json is missing reference.role")
+    reference_path = ready / f"{ref_role}.nii.gz"
+    mask_path = ready / "brain_mask.nii.gz"
+    if not reference_path.is_file():
+        raise FileNotFoundError(f"Reference volume missing: {reference_path.name}")
+    if not mask_path.is_file():
+        raise FileNotFoundError("brain_mask.nii.gz missing")
+    work = study_dir / "_work_vessels"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        vessels = process_vessels(
+            payload.get("series") or [],
+            reference_path=reference_path,
+            mask_path=mask_path,
+            work=work,
+            ready=ready,
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    meta["vessels"] = vessels
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
+
+
 def preprocess_study(study_id: str, payload: dict, *, out_root: Path, tier: str) -> dict:
     from recon.timing import StageClock
 
@@ -933,6 +1146,14 @@ def preprocess_study(study_id: str, payload: dict, *, out_root: Path, tier: str)
         print(f"  mask + nonzero z-score {role}", flush=True)
         apply_mask_and_zscore(path, ready_mask, ready / f"{role}.nii.gz")
 
+    vessels = process_vessels(
+        series,
+        reference_path=ref_1mm,
+        mask_path=mask_path,
+        work=work,
+        ready=ready,
+    )
+
     meta = {
         "study_id": study_id,
         "tier": tier,
@@ -969,6 +1190,7 @@ def preprocess_study(study_id: str, payload: dict, *, out_root: Path, tier: str)
             "tta": 0,
         },
         "normalization": "nonzero_zscore_channelwise",
+        "vessels": vessels,
     }
     clock.stop()
     meta["stage_times_s"] = clock.as_dict()
@@ -1013,6 +1235,7 @@ def run(
     limit: int | None = None,
     force: bool = False,
     studies: list[str] | None = None,
+    vessels_only: bool = False,
 ) -> PreprocessSummary:
     if tier not in CLI_TIERS:
         raise ValueError(f"tier must be one of {CLI_TIERS}")
@@ -1034,15 +1257,37 @@ def run(
             print(f"not in {tier} inventory: {', '.join(missing)}", flush=True)
     tier_by_id = {row["study_id"]: row.get("tier") or tier for row in rows}
 
-    print(f"Scanning {root} for {len(wanted)} {tier} stud{'y' if len(wanted)==1 else 'ies'}...", flush=True)
+    mode = "vessels-only" if vessels_only else tier
+    print(f"Scanning {root} for {len(wanted)} {mode} stud{'y' if len(wanted)==1 else 'ies'}...", flush=True)
     disk_studies, _duplicates = collect_studies(root)
 
-    summary = PreprocessSummary(tier=tier, candidates=len(wanted))
+    summary = PreprocessSummary(tier=mode, candidates=len(wanted))
     out_root.mkdir(parents=True, exist_ok=True)
 
     for index, study_id in enumerate(wanted, start=1):
         ready = out_root / study_id / "04_ready"
         print(f"[{index}/{len(wanted)}] {study_id}", flush=True)
+        if vessels_only:
+            payload = disk_studies.get(study_id)
+            if payload is None:
+                message = "study not found on disk"
+                print(f"  FAIL {message}", flush=True)
+                summary.failed += 1
+                summary.failures.append((study_id, message))
+                continue
+            try:
+                preprocess_vessels_only(study_id, payload, out_root=out_root)
+            except Exception as exc:
+                message = _scrub(f"{exc.__class__.__name__}: {exc}")
+                logger.exception("Vessel preprocess failed for %s", study_id)
+                print(f"  FAIL {message}", flush=True)
+                summary.failed += 1
+                summary.failures.append((study_id, message))
+                continue
+            print("  done", flush=True)
+            summary.processed += 1
+            summary.processed_ids.append(study_id)
+            continue
         if study_is_done(ready) and not force:
             print("  skip (already done)", flush=True)
             summary.skipped += 1

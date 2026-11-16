@@ -18,6 +18,9 @@ from recon.ingest_real import (
     coverage_reject_reasons,
     mi_accepted,
     pick_channel_series,
+    pick_vessel_series,
+    preprocess_vessels_only,
+    process_vessels,
     public_series,
     series_extent,
     strip_nifti_identity,
@@ -305,6 +308,183 @@ def test_study_is_done_requires_json_mask_png_and_chosen_volumes(tmp_path):
     assert study_is_done(ready) is False
 
 
+def test_pick_vessel_series_skips_mip_and_thick_and_returns_most_slices():
+    mip = _series(
+        modality="MRA",
+        series_description="MIP - s3DI_MC_HR",
+        acquisition="3D",
+        slice_thickness_mm=1.0,
+        n_slices=200,
+        usable_as_input=False,
+    )
+    thick = _series(
+        modality="MRA",
+        series_description="s3DI_MC_HR thick",
+        acquisition="3D",
+        slice_thickness_mm=5.0,
+        n_slices=180,
+        usable_as_input=False,
+    )
+    planar = _series(
+        modality="MRA",
+        series_description="s3DI_MC_HR 2D",
+        acquisition="2D",
+        slice_thickness_mm=1.0,
+        n_slices=190,
+        usable_as_input=False,
+    )
+    keep_small = _series(
+        modality="MRA",
+        series_description="s3DI_MC_HR",
+        acquisition="3D",
+        slice_thickness_mm=1.0,
+        n_slices=120,
+        usable_as_input=False,
+    )
+    keep_large = _series(
+        modality="MRA",
+        series_description="s3DI_MC_HR HR",
+        acquisition="3D",
+        slice_thickness_mm=0.8,
+        n_slices=160,
+        usable_as_input=False,
+    )
+    picked = pick_vessel_series([mip, thick, planar, keep_small, keep_large], "MRA")
+    assert picked is not None
+    assert picked["series_description"] == "s3DI_MC_HR HR"
+    assert pick_vessel_series([mip, thick, planar], "MRA") is None
+    assert pick_vessel_series([], "VEN") is None
+
+
+def test_rejected_vessel_registration_writes_no_file_and_records_reason(tmp_path):
+    import recon.ingest_real as ingest
+
+    ready = tmp_path / "04_ready"
+    work = tmp_path / "_work"
+    ready.mkdir()
+    work.mkdir()
+    affine = np.eye(4, dtype=np.float64)
+    ref = tmp_path / "ref.nii.gz"
+    mask = tmp_path / "mask.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((6, 6, 6), dtype=np.float32), affine), ref)
+    nib.save(nib.Nifti1Image(np.ones((6, 6, 6), dtype=np.uint8), affine), mask)
+    item = _series(
+        modality="MRA",
+        series_description="s3DI_MC_HR",
+        acquisition="3D",
+        slice_thickness_mm=1.0,
+        n_slices=80,
+        usable_as_input=False,
+        source_path=tmp_path / "dicom_mra",
+    )
+    (tmp_path / "dicom_mra").mkdir()
+
+    def fake_convert(series_item, dest, *, role):
+        nib.save(nib.Nifti1Image(np.ones((6, 6, 6), dtype=np.float32), affine), dest)
+        return "stub"
+
+    def fake_register(moving_path, fixed_path, dest, work_dir, role, *, fixed_mask_path):
+        nib.save(nib.Nifti1Image(np.ones((6, 6, 6), dtype=np.float32), affine), dest)
+        return {"value": -0.05, "init": "identity", "accepted": False, "failed": True}
+
+    original_convert = ingest.convert_series
+    original_register = ingest.rigid_register_to_reference
+    ingest.convert_series = fake_convert
+    ingest.rigid_register_to_reference = fake_register
+    try:
+        vessels = process_vessels(
+            [item],
+            reference_path=ref,
+            mask_path=mask,
+            work=work,
+            ready=ready,
+        )
+    finally:
+        ingest.convert_series = original_convert
+        ingest.rigid_register_to_reference = original_register
+
+    assert vessels["mra"]["accepted"] is False
+    assert vessels["mra"]["file"] is None
+    assert vessels["mra"]["series_description"] == "s3DI_MC_HR"
+    assert vessels["mra"]["slice_thickness_mm"] == 1.0
+    assert vessels["mra"]["registration_score"] == -0.05
+    assert "threshold" in vessels["mra"]["reason"]
+    assert not (ready / "vessels_mra.nii.gz").exists()
+    assert vessels["ven"]["accepted"] is False
+    assert vessels["ven"]["reason"] == "no suitable series"
+
+
+def test_vessels_only_keeps_existing_preprocess_keys(tmp_path):
+    import recon.ingest_real as ingest
+
+    out_root = tmp_path / "outputs"
+    study_id = "study_abc123def456"
+    ready = out_root / study_id / "04_ready"
+    ready.mkdir(parents=True)
+    affine = np.eye(4, dtype=np.float64)
+    for name in ("brain_mask", "flair", "t1", "t1c", "t2"):
+        nib.save(nib.Nifti1Image(np.ones((4, 4, 4), dtype=np.float32), affine), ready / f"{name}.nii.gz")
+    (ready / "registration_check.png").write_bytes(b"png")
+    prior = {
+        "study_id": study_id,
+        "tier": "FULL",
+        "reference": {"role": "t1", "reason": "3D T1 (thinnest)", "series_description": "eT1W_3D_TFE_ref"},
+        "series_chosen": {"flair": {}, "t1": {}, "t1c": {}, "t2": {}},
+        "original_thickness_mm": {"flair": 5.0, "t1": 1.1, "t1c": 5.0, "t2": 5.0},
+        "registration": {"failed": []},
+        "registration_failed": [],
+        "series_rejected": [],
+        "reference_brain_si_mm": 140.0,
+        "conversion": {"t1": "dcm2niix"},
+        "n4": True,
+        "skull_strip": {"method": "hd-bet"},
+        "normalization": "nonzero_zscore_channelwise",
+        "stage_times_s": {"preprocess": 1.0},
+    }
+    (ready / "preprocess.json").write_text(json.dumps(prior), encoding="utf-8")
+    assert study_is_done(ready) is True
+
+    def fake_process(series, *, reference_path, mask_path, work, ready):
+        return {
+            "mra": {
+                "series_description": "s3DI_MC_HR",
+                "slice_thickness_mm": 1.0,
+                "registration_score": -0.3,
+                "accepted": True,
+                "file": "vessels_mra.nii.gz",
+                "modality": "mra",
+            },
+            "ven": {
+                "series_description": None,
+                "slice_thickness_mm": None,
+                "registration_score": None,
+                "accepted": False,
+                "file": None,
+                "reason": "no suitable series",
+                "modality": "ven",
+            },
+        }
+
+    original = ingest.process_vessels
+    ingest.process_vessels = fake_process
+    try:
+        meta = preprocess_vessels_only(
+            study_id,
+            {"series": []},
+            out_root=out_root,
+        )
+    finally:
+        ingest.process_vessels = original
+
+    for key, value in prior.items():
+        assert meta[key] == value
+    assert "vessels" in meta
+    assert meta["vessels"]["mra"]["accepted"] is True
+    written = json.loads((ready / "preprocess.json").read_text(encoding="utf-8"))
+    for key in prior:
+        assert written[key] == prior[key]
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -322,4 +502,7 @@ if __name__ == "__main__":
     test_rejects_small_fov_drive_and_sella()
     test_rejects_thin_si_slab()
     test_prefers_axial_then_thinnest_after_fov_filter()
+    test_pick_vessel_series_skips_mip_and_thick_and_returns_most_slices()
+    test_rejected_vessel_registration_writes_no_file_and_records_reason(Path(tempfile.mkdtemp()))
+    test_vessels_only_keeps_existing_preprocess_keys(Path(tempfile.mkdtemp()))
     print("ingest_real ok")

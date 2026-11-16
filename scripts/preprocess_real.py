@@ -4,6 +4,7 @@ Example:
     python scripts/preprocess_real.py --tier FULL
     python scripts/preprocess_real.py --tier NO_CONTRAST --limit 5
     python scripts/preprocess_real.py --tier ALL
+    python scripts/preprocess_real.py --tier FULL --vessels-only --studies study_ff9c6c72e9d1
 """
 
 from __future__ import annotations
@@ -38,6 +39,11 @@ def parse_args(argv=None):
         default=None,
         help="Hashed study ids to process (within the selected tier)",
     )
+    parser.add_argument(
+        "--vessels-only",
+        action="store_true",
+        help="Convert/register MRA and VEN for already-preprocessed studies without redoing FLAIR/T1/T1c/T2",
+    )
     parser.add_argument("--root", type=Path, default=DEFAULT_DATA, help="DICOM/NIfTI root")
     parser.add_argument("--inventory", type=Path, default=DEFAULT_OUT, help="Inventory CSV")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT, help="Output root (hashed study folders)")
@@ -56,6 +62,7 @@ def main(argv=None) -> int:
             limit=args.limit,
             force=args.force,
             studies=args.studies,
+            vessels_only=args.vessels_only,
         )
     print_summary(summary)
     return 0 if summary.failed == 0 else 1
