@@ -512,11 +512,11 @@ def _raw_parcellation(
     planned = planned_anatomy_result(method, device)
     input_key = "t1c" if anatomy_input == "t1c" else "t1"
 
-    def _stage(name: str) -> None:
+    def _stage(name: str, detail: str | None = None) -> None:
         if progress is not None:
-            progress.set_stage(name)
+            progress.set_stage(name, detail=detail)
         if clock is not None:
-            if name.startswith("Anatomy"):
+            if name == "Anatomy":
                 clock.start("synthseg")
             elif name == "Lobes":
                 clock.start("lobe_warp")
@@ -555,7 +555,7 @@ def _raw_parcellation(
         raise ValueError("case_dir is required to run SynthSeg")
     chosen = select_device(device)
     if planned == ANATOMY_RESULT_SYNTHSEG and chosen.type == "cpu":
-        _stage("Anatomy (SynthSeg on CPU — can take several minutes)")
+        _stage("Anatomy", detail="SynthSeg on CPU — can take several minutes")
     else:
         _stage("Anatomy")
     tumor = np.zeros(shape, dtype=np.uint8) if tumor_label is None else np.asarray(tumor_label)

@@ -357,6 +357,11 @@ select {
 #job-stages li.is-done { color: #1f7a45; }
 #job-stages li.is-error { color: #d64545; }
 #job-stages li.is-skipped { color: #8a97a6; }
+#job-stages .stage-detail {
+  flex: 1;
+  font-weight: 400;
+  color: #5b6b7c;
+}
 
 #anatomy-method-note {
   margin: 0 0 12px;

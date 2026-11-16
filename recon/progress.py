@@ -15,6 +15,7 @@ class BuildProgress:
         now = time.monotonic()
         self._lock = threading.Lock()
         self.stage = "Loading"
+        self.detail = None
         self.status = "running"
         self.error = None
         self.warning = None
@@ -23,14 +24,16 @@ class BuildProgress:
         self.stages = {name: {"seconds": None, "status": "pending"} for name in STAGES}
         self.stages["Loading"]["status"] = "running"
 
-    def set_stage(self, name: str) -> None:
+    def set_stage(self, name: str, detail: str | None = None) -> None:
         if name not in self.stages:
             raise ValueError(f"Unknown stage {name!r}")
         with self._lock:
             if self.stage == name and self.stages[name]["status"] == "running":
+                self.detail = detail
                 return
             self._close_current()
             self.stage = name
+            self.detail = detail
             self._stage_started = time.monotonic()
             if name != "Done":
                 self.stages[name]["status"] = "running"
@@ -47,6 +50,7 @@ class BuildProgress:
             self.warning = warning
             self._close_current()
             self.stage = "Done"
+            self.detail = None
             self.status = "done"
             self.stages["Done"]["status"] = "done"
             self.stages["Done"]["seconds"] = round(time.monotonic() - self.started, 2)
@@ -71,6 +75,7 @@ class BuildProgress:
             return {
                 "status": self.status,
                 "stage": self.stage,
+                "detail": self.detail,
                 "stages": stages,
                 "error": self.error,
                 "warning": self.warning,

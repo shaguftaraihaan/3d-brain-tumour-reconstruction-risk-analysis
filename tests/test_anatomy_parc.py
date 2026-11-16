@@ -543,8 +543,64 @@ def test_lobe_warp_keeps_the_t1_nifti_affine():
     assert warped.shape == (6, 6, 6)
 
 
+def test_cpu_synthseg_sets_anatomy_progress_detail(tmp_path):
+    """Real BuildProgress accepts Anatomy + detail; no ValueError on CPU SynthSeg."""
+    from recon.progress import BuildProgress
+    from recon.scene import _raw_parcellation
+
+    shape = (5, 5, 5)
+    affine = np.eye(4)
+    synth = np.zeros(shape, dtype=np.int16)
+    synth[2, 2, 2] = 1003
+    progress = BuildProgress()
+    seen = {}
+
+    def runner(t1, affine_in, device):
+        assert device.type == "cpu"
+        snap = progress.snapshot()
+        seen["stage"] = snap["stage"]
+        seen["detail"] = snap["detail"]
+        return synth, {1003: "ctx-lh-superiorfrontal"}, True
+
+    import recon.anatomy as anatomy
+
+    original = anatomy.parcellate_case
+
+    def with_runner(*args, **kwargs):
+        kwargs = dict(kwargs)
+        kwargs["synthseg_runner"] = runner
+        return original(*args, **kwargs)
+
+    anatomy.parcellate_case = with_runner
+    try:
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        for suffix in ("t2f", "t1n", "t1c", "t2w"):
+            _write(case_dir / f"{suffix}.nii.gz", np.ones(shape, dtype=np.float32), affine)
+        raw, used = _raw_parcellation(
+            {"case_id": "case"},
+            case_dir,
+            None,
+            shape,
+            affine,
+            "cpu",
+            "case",
+            progress=progress,
+            tumor_label=np.zeros(shape, dtype=np.uint8),
+            anatomy_method="synthseg",
+        )
+    finally:
+        anatomy.parcellate_case = original
+
+    assert used == "synthseg"
+    assert int(raw[2, 2, 2]) == 1003
+    assert seen["stage"] == "Anatomy"
+    assert seen["detail"] == "SynthSeg on CPU — can take several minutes"
+
+
 if __name__ == "__main__":
     test_resample_is_nearest_and_uses_the_tumor_affine()
     test_cpu_skips_synthseg_and_uses_the_atlas()
     test_lobe_warp_keeps_the_t1_nifti_affine()
+    test_cpu_synthseg_sets_anatomy_progress_detail(Path(tempfile.mkdtemp()))
     print("anatomy_parc ok")

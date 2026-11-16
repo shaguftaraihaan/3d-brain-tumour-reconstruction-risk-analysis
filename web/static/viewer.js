@@ -355,7 +355,14 @@ function renderJobProgress(job) {
         : info.status === "running"
           ? "…"
           : "";
-    li.append(label, time);
+    if (info.status === "running" && job.detail && name === job.stage) {
+      const detail = document.createElement("span");
+      detail.className = "stage-detail";
+      detail.textContent = job.detail;
+      li.append(label, detail, time);
+    } else {
+      li.append(label, time);
+    }
     list.append(li);
     if (info.status === "done" || info.status === "skipped") doneCount += 1;
   }
