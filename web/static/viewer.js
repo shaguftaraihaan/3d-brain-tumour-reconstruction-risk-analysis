@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { buildTour, TourPlayer } from "./tours.js";
 
 const AXIS_NAME = ["Sagittal", "Coronal", "Axial"];
 const TUMOR_ORDER = ["enhancing", "necrosis", "edema"];
@@ -48,6 +49,7 @@ const tooltip = document.querySelector("#tooltip");
 const tractNote = document.querySelector("#tract-note");
 const catalogByName = new Map();
 let catalogReady = null;
+let selectedStructureName = null;
 
 const SCAN_ROLES = {
   t2f: { name: "FLAIR", help: "Highlights swelling around the tumor.", required: true },
@@ -372,9 +374,14 @@ function formatSeconds(value) {
 }
 
 async function loadCatalog() {
-  const rows = await fetch("/api/catalog").then(readJson);
-  catalogByName.clear();
-  for (const row of rows || []) catalogByName.set(row.mesh_name, row);
+  try {
+    const rows = await fetch("/api/catalog").then(readJson);
+    catalogByName.clear();
+    for (const row of rows || []) catalogByName.set(row.mesh_name, row);
+  } catch (error) {
+    console.warn("Structure catalog unavailable; using manifest colours.", error);
+    catalogByName.clear();
+  }
   return catalogByName;
 }
 
@@ -461,9 +468,28 @@ async function startViewer(id) {
   sliceMeshes.forEach((group) => scene.add(group));
   const gizmo = makeOrientationGizmo();
 
-  const gltf = await new GLTFLoader().loadAsync(
-    `/api/cases/${encodeURIComponent(id)}/scene.glb?v=slices3`,
-  );
+  const loadingEl = document.querySelector("#scene-loading");
+  if (loadingEl) {
+    loadingEl.hidden = false;
+    loadingEl.textContent = "Loading scene… 0%";
+  }
+  const sceneUrl = `/api/cases/${encodeURIComponent(id)}/scene.glb?v=slices3`;
+  const gltf = await new Promise((resolve, reject) => {
+    new GLTFLoader().load(
+      sceneUrl,
+      resolve,
+      (event) => {
+        if (!loadingEl) return;
+        if (!event.total) {
+          loadingEl.textContent = "Loading scene…";
+          return;
+        }
+        const pct = Math.min(100, Math.round((100 * event.loaded) / event.total));
+        loadingEl.textContent = `Loading scene… ${pct}%`;
+      },
+      reject,
+    );
+  });
   scene.add(gltf.scene);
   const pickable = [];
   const byName = new Map();
@@ -554,6 +580,7 @@ async function startViewer(id) {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let hoveredName = null;
+  let pointerDown = null;
   canvas.addEventListener("pointermove", (event) => {
     const rect = canvas.getBoundingClientRect();
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -575,8 +602,26 @@ async function startViewer(id) {
     hoveredName = null;
     tooltip.hidden = true;
   });
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    pointerDown = { x: event.clientX, y: event.clientY };
+  });
+  canvas.addEventListener("pointerup", (event) => {
+    if (event.button !== 0 || !pointerDown) return;
+    const dx = event.clientX - pointerDown.x;
+    const dy = event.clientY - pointerDown.y;
+    pointerDown = null;
+    if (dx * dx + dy * dy > 25) return;
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObjects(pickable, false).find((item) => item.object.visible);
+    if (hit) selectStructure(hit.object.name, byName, camera, controls, manifest);
+    else closeStructureCard(byName);
+  });
 
-  wireLegend(byName, camera, controls);
+  wireLegend(byName, camera, controls, manifest);
   wirePresets(byName, camera, controls, gltf.scene);
   document.querySelector("#screenshot").addEventListener("click", () => {
     saveScreenshot(renderer, labelRenderer, scene, camera, byName, manifest);
@@ -591,7 +636,11 @@ async function startViewer(id) {
   }
   applyPreset("glass-tumor", byName, camera, controls, gltf.scene);
   frameTumorView(camera, controls, byName);
+  const tourPlayer = wireTour(manifest, byName, camera, controls);
   window.__viewerReady = true;
+  if (params.get("tour") === "1" && tourPlayer) {
+    tourPlayer.start();
+  }
 
   function refreshClips() {
     const active = [];
@@ -621,6 +670,7 @@ async function startViewer(id) {
     camera.updateProjectionMatrix();
   }
 
+  let hideLoadingAfterFrame = Boolean(loadingEl);
   function frame() {
     resize();
     controls.update();
@@ -629,6 +679,10 @@ async function startViewer(id) {
     renderer.render(scene, camera);
     labelRenderer.render(scene, camera);
     renderOrientationGizmo(renderer, camera, controls, gizmo);
+    if (hideLoadingAfterFrame && loadingEl) {
+      loadingEl.hidden = true;
+      hideLoadingAfterFrame = false;
+    }
     requestAnimationFrame(frame);
   }
   window.addEventListener("resize", resize);
@@ -708,8 +762,198 @@ function legendItem(name, entry) {
   volume.textContent = Number.isFinite(Number(entry.volume_cm3))
     ? `${Number(entry.volume_cm3).toFixed(2)} cm³`
     : "";
-  button.append(swatch, label, volume);
+  const info = document.createElement("button");
+  info.type = "button";
+  info.className = "structure-info";
+  info.title = "Show facts";
+  info.setAttribute("aria-label", `Facts for ${structureLabel(name, entry)}`);
+  info.textContent = "i";
+  button.append(swatch, label, volume, info);
+  button.__entry = entry;
   return button;
+}
+
+function structureMatchesQuery(name, entry, catalogRow, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const parts = [
+    name,
+    entry?.legend,
+    entry?.full_name,
+    entry?.short_name,
+    catalogRow?.legend_name,
+    catalogRow?.mesh_name,
+    catalogRow?.short_name,
+  ];
+  return parts.some((part) => part && String(part).toLowerCase().includes(needle));
+}
+
+function sourcePlainWords(source) {
+  if (source === "model") return "Tumor model";
+  if (source === "synthseg") return "Automatic segmentation";
+  if (source === "atlas-estimated") return "Atlas estimate, not measured from this scan";
+  return source ? String(source) : null;
+}
+
+function structureSideLabel(name, entry, catalogRow) {
+  if (catalogRow?.side === "left" || catalogRow?.side === "right") return catalogRow.side;
+  const short = entry?.short_name || catalogRow?.short_name || "";
+  if (/-L$/i.test(short) || /^Left\b/i.test(name) || /^Left\b/i.test(entry?.full_name || "")) return "left";
+  if (/-R$/i.test(short) || /^Right\b/i.test(name) || /^Right\b/i.test(entry?.full_name || "")) return "right";
+  return null;
+}
+
+function tumorLocationFacts(name, manifest) {
+  const summary = manifest?.tumor_location;
+  if (!summary) return [];
+  const facts = [];
+  for (const region of ["WT", "ET"]) {
+    const row = (summary[region] || []).find((item) => item.name === name);
+    if (!row) continue;
+    const label = region === "WT" ? "Whole tumor" : "Enhancing tumor";
+    if (row.relation === "overlaps") facts.push(`${label}: overlaps`);
+    else if (row.distance_mm != null && Number.isFinite(Number(row.distance_mm))) {
+      facts.push(`${label}: ${Number(row.distance_mm).toFixed(1)} mm`);
+    }
+  }
+  return facts;
+}
+
+function clearStructureHighlight(byName) {
+  if (!byName) return;
+  byName.forEach((mesh) => {
+    const boost = mesh.userData._selectBoost;
+    if (!boost) return;
+    if (boost.type === "emissive" && mesh.material?.emissive) {
+      mesh.material.emissive.copy(boost.color);
+      if ("emissiveIntensity" in mesh.material) mesh.material.emissiveIntensity = boost.intensity;
+    } else if (boost.type === "glass" && mesh.material?.uniforms?.intensity) {
+      mesh.material.uniforms.intensity.value = boost.intensity;
+    }
+    delete mesh.userData._selectBoost;
+  });
+}
+
+function highlightStructure(mesh) {
+  if (!mesh?.material) return;
+  if (mesh.material.emissive) {
+    mesh.userData._selectBoost = {
+      type: "emissive",
+      color: mesh.material.emissive.clone(),
+      intensity: mesh.material.emissiveIntensity ?? 0,
+    };
+    mesh.material.emissive.setHex(0xffffff);
+    if ("emissiveIntensity" in mesh.material) mesh.material.emissiveIntensity = 0.45;
+    return;
+  }
+  if (mesh.material.uniforms?.intensity) {
+    mesh.userData._selectBoost = {
+      type: "glass",
+      intensity: mesh.material.uniforms.intensity.value,
+    };
+    mesh.material.uniforms.intensity.value = mesh.userData._selectBoost.intensity * 1.7;
+  }
+}
+
+function closeStructureCard(byName) {
+  selectedStructureName = null;
+  clearStructureHighlight(byName);
+  document.querySelectorAll(".legend-item.is-selected").forEach((row) => row.classList.remove("is-selected"));
+  const card = document.querySelector("#structure-card");
+  if (card) card.hidden = true;
+}
+
+function fillStructureCard(name, entry, catalogRow, manifest) {
+  const card = document.querySelector("#structure-card");
+  const title = document.querySelector("#structure-card-title");
+  const body = document.querySelector("#structure-card-body");
+  if (!card || !title || !body || !entry) return;
+  title.textContent = structureLabel(name, entry);
+  body.replaceChildren();
+  const rows = [];
+  rows.push(["Name", structureLabel(name, entry)]);
+  if (entry.group) rows.push(["Group", entry.group]);
+  const side = structureSideLabel(name, entry, catalogRow);
+  if (side) rows.push(["Side", side]);
+  if (Number.isFinite(Number(entry.volume_cm3))) {
+    rows.push(["Volume", `${Number(entry.volume_cm3).toFixed(1)} cm³`]);
+  }
+  const source = sourcePlainWords(entry.source);
+  if (source) rows.push(["Source", source]);
+  for (const fact of tumorLocationFacts(name, manifest)) rows.push(["Tumor", fact]);
+  for (const [label, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    body.append(dt, dd);
+  }
+  card.hidden = false;
+}
+
+function selectStructure(name, byName, camera, controls, manifest) {
+  const entry = manifest?.structures?.[name];
+  if (!entry) return;
+  clearStructureHighlight(byName);
+  selectedStructureName = name;
+  document.querySelectorAll(".legend-item").forEach((row) => {
+    row.classList.toggle("is-selected", row.dataset.name === name);
+  });
+  const mesh = byName?.get(name);
+  if (mesh) {
+    mesh.visible = true;
+    highlightStructure(mesh);
+    if (camera && controls) frameObjects(camera, controls, [mesh]);
+    syncLegend(byName);
+  }
+  fillStructureCard(name, entry, catalogByName.get(name), manifest);
+}
+
+function applyStructureSearchFilter() {
+  const input = document.querySelector("#structure-search");
+  const query = input ? input.value : "";
+  document.querySelectorAll("#groups .group").forEach((section) => {
+    let visible = 0;
+    section.querySelectorAll(".legend-item").forEach((row) => {
+      const name = row.dataset.name;
+      const entry = row.__entry || null;
+      const match = structureMatchesQuery(name, entry, catalogByName.get(name), query);
+      row.classList.toggle("is-search-hidden", !match);
+      if (match) visible += 1;
+    });
+    section.classList.toggle("is-search-empty", Boolean(String(query || "").trim()) && visible === 0);
+  });
+}
+
+function visibleSearchMatches() {
+  return [...document.querySelectorAll("#groups .legend-item:not(.is-search-hidden)")].map(
+    (row) => row.dataset.name,
+  );
+}
+
+function wireStructureSearch(byName, camera, controls, manifest) {
+  const input = document.querySelector("#structure-search");
+  if (!input || input.dataset.wired === "1") return;
+  input.dataset.wired = "1";
+  input.addEventListener("input", () => applyStructureSearchFilter());
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      input.value = "";
+      applyStructureSearchFilter();
+      return;
+    }
+    if (event.key !== "Enter") return;
+    const matches = visibleSearchMatches();
+    if (matches.length === 1) {
+      event.preventDefault();
+      selectStructure(matches[0], byName, camera, controls, manifest);
+    }
+  });
+  const close = document.querySelector("#structure-card-close");
+  if (close && close.dataset.wired !== "1") {
+    close.dataset.wired = "1";
+    close.addEventListener("click", () => closeStructureCard(byName));
+  }
 }
 
 function groupRank(name) {
@@ -966,10 +1210,11 @@ function applyOpacity(material, opacity) {
   }
 }
 
-function wireLegend(byName, camera, controls) {
+function wireLegend(byName, camera, controls, manifest) {
   document.querySelectorAll(".legend-item").forEach((row) => {
     const name = row.dataset.name;
-    row.addEventListener("click", () => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest(".structure-info")) return;
       if (row.classList.contains("is-volume")) return;
       const mesh = byName.get(name);
       if (!mesh) return;
@@ -980,6 +1225,14 @@ function wireLegend(byName, camera, controls) {
       event.preventDefault();
       isolateStructure(name, byName, camera, controls);
     });
+    const info = row.querySelector(".structure-info");
+    if (info) {
+      info.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectStructure(name, byName, camera, controls, manifest);
+      });
+    }
   });
   document.querySelectorAll("[data-role=group-opacity]").forEach((slider) => {
     slider.addEventListener("input", () => {
@@ -989,12 +1242,77 @@ function wireLegend(byName, camera, controls) {
   });
   syncGroupSliders(byName);
   syncLegend(byName);
+  wireStructureSearch(byName, camera, controls, manifest);
+  applyStructureSearchFilter();
 }
 
 function wirePresets(byName, camera, controls, root) {
   document.querySelectorAll("[data-preset]").forEach((button) => {
     button.addEventListener("click", () => applyPreset(button.dataset.preset, byName, camera, controls, root));
   });
+}
+
+function updateTourBar(step, index, count) {
+  const bar = document.querySelector("#tour-bar");
+  if (!bar) return;
+  bar.hidden = false;
+  const title = document.querySelector("#tour-title");
+  const text = document.querySelector("#tour-text");
+  const meta = document.querySelector("#tour-step");
+  const back = document.querySelector("#tour-back");
+  const next = document.querySelector("#tour-next");
+  if (title) title.textContent = step?.title || "";
+  if (text) text.textContent = step?.text || "";
+  if (meta) meta.textContent = count ? `Step ${index + 1} of ${count}` : "";
+  if (back) back.disabled = index <= 0;
+  if (next) next.textContent = index >= count - 1 ? "Finish" : "Next";
+}
+
+function hideTourBar() {
+  const bar = document.querySelector("#tour-bar");
+  if (bar) bar.hidden = true;
+}
+
+function wireTour(manifest, byName, camera, controls) {
+  const start = document.querySelector("#tour-start");
+  const bar = document.querySelector("#tour-bar");
+  if (!start || !bar) return null;
+  const steps = buildTour(manifest);
+  if (!steps.length) {
+    start.disabled = true;
+    start.title = "No tour steps for this case";
+    return null;
+  }
+  const player = new TourPlayer({
+    steps,
+    byName,
+    camera,
+    controls,
+    setVisible: (name, visible) => setVisible(byName, name, visible),
+    syncLegend: () => syncLegend(byName),
+    onChange: updateTourBar,
+    onExit: hideTourBar,
+  });
+  start.addEventListener("click", () => player.start());
+  document.querySelector("#tour-back")?.addEventListener("click", () => player.back());
+  document.querySelector("#tour-next")?.addEventListener("click", () => player.next());
+  document.querySelector("#tour-exit")?.addEventListener("click", () => player.exit());
+  window.addEventListener("keydown", (event) => {
+    if (!player.active) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      player.exit();
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      player.next();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      player.back();
+    }
+  });
+  return player;
 }
 
 function applyPreset(id, byName, camera, controls, root) {

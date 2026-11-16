@@ -53,6 +53,7 @@
 
   <div id="viewer" hidden>
     <canvas id="view"></canvas>
+    <p id="scene-loading" hidden role="status">Loading scene… 0%</p>
     <aside id="panel">
       <h1 id="case-title">Case</h1>
       <p id="anatomy-warning" hidden></p>
@@ -80,10 +81,21 @@
       <label class="check"><input id="lobe-tint" type="checkbox"> Lobe tint</label>
       <label class="check"><input id="auto-rotate" type="checkbox"> Auto-rotate</label>
       <button id="screenshot" type="button">Save PNG</button>
+      <button id="tour-start" type="button">Tour</button>
       <section id="tumor-card">
         <h2>Tumor location</h2>
         <div id="tumor-location"></div>
         <p id="blood-note" hidden></p>
+      </section>
+      <label class="label-mode">Find structure
+        <input id="structure-search" type="search" placeholder="Type a name" autocomplete="off">
+      </label>
+      <section id="structure-card" hidden>
+        <header>
+          <h2 id="structure-card-title">Structure</h2>
+          <button type="button" id="structure-card-close" class="link">Close</button>
+        </header>
+        <dl id="structure-card-body"></dl>
       </section>
       <div id="groups"></div>
       <section>
@@ -180,7 +192,26 @@
       </div>
     </section>
     <div id="tooltip" hidden></div>
+    <div id="tour-bar" hidden>
+      <div class="tour-copy">
+        <p id="tour-step" class="muted"></p>
+        <h2 id="tour-title"></h2>
+        <p id="tour-text"></p>
+      </div>
+      <div class="tour-actions">
+        <button type="button" id="tour-back">Back</button>
+        <button type="button" id="tour-next">Next</button>
+        <button type="button" id="tour-exit">Exit</button>
+      </div>
+    </div>
   </div>
+  <footer class="site-footer">
+    <nav class="footer-links">
+      <a href="/how-it-works">How it works</a>
+      <a href="/credits">Credits</a>
+    </nav>
+    <p>Research and education prototype. Not a medical device. Not for diagnosis or treatment decisions.</p>
+  </footer>
   <script type="module" src="/static/viewer.js?v=anatomy1"></script>
 </body>
 </html>

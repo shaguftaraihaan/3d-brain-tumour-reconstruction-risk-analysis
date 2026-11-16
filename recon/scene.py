@@ -9,8 +9,10 @@ location summary; they are not separate solid meshes.
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
+import shutil
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -46,6 +48,25 @@ from recon.mesh import check_mesh, mesh_from_mask, region_shells
 
 MIN_OVERLAP_VOXELS = 50
 logger = logging.getLogger(__name__)
+
+
+def write_scene_glb(scene, out_dir: Path) -> Path:
+    """Export ``scene.glb`` and a level-6 ``scene.glb.gz`` beside it."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    glb_path = out_dir / "scene.glb"
+    scene.export(glb_path)
+    write_scene_glb_gz(glb_path)
+    return glb_path
+
+
+def write_scene_glb_gz(glb_path: Path) -> Path:
+    """Compress an existing ``scene.glb`` to ``scene.glb.gz`` (gzip level 6)."""
+    glb_path = Path(glb_path)
+    gz_path = Path(str(glb_path) + ".gz")
+    with glb_path.open("rb") as src, gzip.open(gz_path, "wb", compresslevel=6) as dest:
+        shutil.copyfileobj(src, dest)
+    return gz_path
 
 # Nested WT / TC / ET shells. RGB and names come from ``recon.labels``.
 REGION_COLORS = {spec.mesh_name: rgba(spec) for spec in SHELLS}
@@ -872,7 +893,7 @@ def _export_scene(
             )
 
     clock.start("export")
-    scene.export(out_dir / "scene.glb")
+    write_scene_glb(scene, out_dir)
     clock.stop()
     manifest = {
         "case_id": case_id,
@@ -1028,7 +1049,7 @@ def rebuild_glass_meshes(out_dir):
             structures[name] = dict(entry)
             exported.append(spec)
 
-    scene.export(out_dir / "scene.glb")
+    write_scene_glb(scene, out_dir)
     manifest["structures"] = structures
     manifest["legend"] = legend_entries(exported, _legend_volumes(structures))
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

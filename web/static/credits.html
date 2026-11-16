@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Credits — BraTS brain map</title>
+  <link rel="stylesheet" href="/static/home.css">
+</head>
+<body>
+  <main class="home doc-page">
+    <p class="crumb"><a href="/">Home</a></p>
+    <h1>Credits</h1>
+    <p class="lede">Software, models, datasets, and atlases this repository imports or loads. Licence and link are filled only when an exact value appears in a file here; otherwise they are marked TODO(verify).</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>What it is used for here</th>
+            <th>Licence</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Flask</td>
+            <td>Local web app and case API</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>NumPy</td>
+            <td>Array math throughout reconstruction and the viewer API</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>SciPy</td>
+            <td>Image morphology, ND image filters, spatial trees</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>NiBabel</td>
+            <td>Reading and writing NIfTI volumes and affines</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>PyTorch</td>
+            <td>Running SegResNet and DIPY’s PyTorch SynthSeg</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>MONAI</td>
+            <td>SegResNet network, sliding-window inference, intensity normalisation</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>DIPY (PyTorch SynthSeg)</td>
+            <td><code>dipy.nn.torch.synthseg</code> brain parcellation</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>ANTs (antspy)</td>
+            <td>Resampling, rigid registration for real MRI, SyN warp of atlas tracts and lobe labels</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>trimesh</td>
+            <td>Mesh construction, Taubin smoothing, export helpers</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>scikit-image</td>
+            <td>Marching cubes for surfaces</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>Pillow</td>
+            <td>PNG slice and overlay images in the viewer API</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>PyYAML</td>
+            <td>Post-process threshold configs</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>pydicom</td>
+            <td>Reading DICOM metadata for real-study inventory and ingest</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>matplotlib</td>
+            <td>Review / figure generation scripts for real cases</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>three.js 0.169.0</td>
+            <td>Browser 3D viewer (GLTF, controls, labels, room environment)</td>
+            <td>TODO(verify)</td>
+            <td>https://unpkg.com/three@0.169.0/</td>
+          </tr>
+          <tr>
+            <td>dcm2niix</td>
+            <td>DICOM-to-NIfTI conversion for real studies (preferred path)</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>HD-BET</td>
+            <td>Skull-stripping the real-study reference volume</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>abhinav_mri (third_party)</td>
+            <td>Teammate preprocessing helpers (DICOM conversion fallback, N4, skull-strip API) and related model code paths</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>SegResNet checkpoint (ours)</td>
+            <td>Local tumor segmentation model</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>abhinav_v3 checkpoint (<code>checkpoints/brats_scale_full/best_model.pt</code>)</td>
+            <td>Teammate BraTS tumor segmentation weights used when present</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>BraTS 2020 training cases</td>
+            <td>Dataset referenced by the abhinav split lists (369 training cases covered by train / val / held-out files)</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>FSL MNI152 T1 1&nbsp;mm</td>
+            <td>Registration template for atlas warps (<code>atlases/MNI152_T1_1mm.nii.gz</code>)</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>JHU-ICBM-tracts-prob-2mm</td>
+            <td>White-matter tract probability atlas warped into patient space</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>FSL MNI structural atlas (MNI-maxprob-thr25-1mm)</td>
+            <td>Lobe labels painted when SynthSeg has no cortical parcels</td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+          <tr>
+            <td>Optional optic radiation maps (e.g. FSL XTRACT <code>or</code>)</td>
+            <td>Optional left/right optic-radiation probability maps under <code>atlases/jhu/</code></td>
+            <td>TODO(verify)</td>
+            <td>TODO(verify)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="footer-links">
+      <a href="/how-it-works">How it works</a>
+      <a href="/credits">Credits</a>
+    </nav>
+    <p>Research and education prototype. Not a medical device. Not for diagnosis or treatment decisions.</p>
+  </footer>
+</body>
+</html>

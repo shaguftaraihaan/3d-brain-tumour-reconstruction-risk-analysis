@@ -98,6 +98,187 @@ def test_api_serves_scene_manifest_and_slices(tmp_path=None):
     assert client.get("/api/cases/nope/manifest.json").status_code == 404
 
 
+def test_scene_glb_gzip_encoding(tmp_path=None):
+    import gzip
+    import os
+    import tempfile
+    import time
+
+    from recon.scene import write_scene_glb_gz
+
+    root = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
+    outputs = root / "outputs"
+    cases = root / "cases"
+    case_out = outputs / "demo"
+    case_out.mkdir(parents=True)
+    plain = b"glb-payload-" + (b"x" * 200)
+    glb = case_out / "scene.glb"
+    glb.write_bytes(plain)
+    write_scene_glb_gz(glb)
+    (case_out / "manifest.json").write_text(
+        json.dumps({"case_id": "demo", "structures": {}}),
+        encoding="utf-8",
+    )
+    client = create_app(outputs, cases).test_client()
+
+    plain_resp = client.get("/api/cases/demo/scene.glb")
+    assert plain_resp.status_code == 200
+    assert plain_resp.data == plain
+    assert plain_resp.headers.get("Content-Encoding") != "gzip"
+
+    gzip_resp = client.get("/api/cases/demo/scene.glb", headers={"Accept-Encoding": "gzip"})
+    assert gzip_resp.status_code == 200
+    assert gzip_resp.headers.get("Content-Encoding") == "gzip"
+    assert gzip_resp.headers.get("Vary") == "Accept-Encoding"
+    assert gzip_resp.mimetype == "model/gltf-binary"
+    assert gzip.decompress(gzip_resp.data) == plain
+
+    gz_path = Path(str(glb) + ".gz")
+    stale = gzip.compress(b"stale-old-bytes", compresslevel=6)
+    gz_path.write_bytes(stale)
+    older = time.time() - 120
+    os.utime(gz_path, (older, older))
+    newer = plain + b"-new"
+    glb.write_bytes(newer)
+    os.utime(glb, None)
+    stale_resp = client.get("/api/cases/demo/scene.glb", headers={"Accept-Encoding": "gzip"})
+    assert stale_resp.status_code == 200
+    assert stale_resp.headers.get("Content-Encoding") != "gzip"
+    assert stale_resp.data == newer
+
+
+def test_api_lists_brats_and_real_cases_without_paths(tmp_path=None):
+    import re
+    import tempfile
+
+    root = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
+    outputs = root / "outputs"
+    cases = root / "cases"
+
+    brats = outputs / "BraTS20_Training_001"
+    brats.mkdir(parents=True)
+    (brats / "scene.glb").write_bytes(b"glb")
+    (brats / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (brats / "manifest.json").write_text(
+        json.dumps(
+            {
+                "case_id": "BraTS20_Training_001",
+                "case_dir": r"C:\Patients\SecretName\BraTS20_Training_001",
+                "structures": {
+                    "edema": {"volume_cm3": 1.5, "group": "Tumor"},
+                    "necrosis": {"volume_cm3": 0.5, "group": "Tumor"},
+                    "enhancing": {"volume_cm3": 0.25, "group": "Tumor"},
+                    "Left CST": {"volume_cm3": 1.0, "group": "Tracts"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    incomplete = outputs / "incomplete"
+    incomplete.mkdir(parents=True)
+    (incomplete / "manifest.json").write_text("{}", encoding="utf-8")
+
+    real = outputs / "real" / "study_abc123def456"
+    real.mkdir(parents=True)
+    (real / "scene.glb").write_bytes(b"real-glb")
+    (real / "manifest.json").write_text(
+        json.dumps(
+            {
+                "case_id": "study_abc123def456",
+                "case_dir": r"D:\Hospital\PatientName\study",
+                "structures": {"edema": {"volume_cm3": 2.0, "group": "Tumor"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    ready = real / "04_ready"
+    ready.mkdir()
+    (ready / "preprocess.json").write_text(
+        json.dumps(
+            {
+                "series_chosen": {
+                    "flair": {"slice_thickness_mm": 5.0},
+                    "t1": {"slice_thickness_mm": 1.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client = create_app(outputs, cases).test_client()
+    response = client.get("/api/cases")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "\\" not in body
+    assert not re.search(r"[A-Za-z]:", body)
+
+    rows = response.json
+    ids = [row["case_id"] for row in rows]
+    assert "incomplete" not in ids
+    assert ids == ["BraTS20_Training_001", "study_abc123def456"]
+
+    brats_row = rows[0]
+    assert brats_row["kind"] == "brats"
+    assert brats_row["structure_count"] == 4
+    assert brats_row["tumor_volume_cm3"] == 2.25
+    assert brats_row["has_tracts"] is True
+    assert brats_row["thick_slices"] is False
+    assert brats_row["preview"] == "/api/cases/BraTS20_Training_001/preview.png"
+
+    real_row = rows[1]
+    assert real_row["kind"] == "real"
+    assert real_row["structure_count"] == 1
+    assert real_row["tumor_volume_cm3"] == 2.0
+    assert real_row["has_tracts"] is False
+    assert real_row["thick_slices"] is True
+    assert real_row["preview"] is None
+
+    manifest = client.get("/api/cases/study_abc123def456/manifest.json")
+    assert manifest.status_code == 200
+    assert manifest.json["case_id"] == "study_abc123def456"
+    assert client.get("/api/cases/study_abc123def456/scene.glb").data == b"real-glb"
+    assert client.get("/api/cases/BraTS20_Training_001/preview.png").status_code == 200
+    assert client.get("/api/cases/study_abc123def456/preview.png").status_code == 404
+
+    rejected = client.get("/api/cases/%2e%2e/manifest.json")
+    assert rejected.status_code == 400
+    assert "Case id" in rejected.json["error"]
+
+
+def test_home_and_viewer_routes():
+    client = create_app().test_client()
+    home = client.get("/")
+    assert home.status_code == 200
+    assert b"Research and education prototype. Not a medical device. Not for diagnosis or treatment decisions." in home.data
+    assert b"/api/cases" in home.data
+    assert b"Open a scan" in home.data
+    home_html = (ROOT / "web" / "static" / "home.html").read_text(encoding="utf-8")
+    assert "/api/cases" in home_html
+
+    viewer = client.get("/viewer")
+    assert viewer.status_code == 200
+    assert b'id="upload-form"' in viewer.data
+    assert b"Open a scan" in viewer.data
+    assert b"Research and education prototype. Not a medical device. Not for diagnosis or treatment decisions." in viewer.data
+
+
+def test_how_it_works_and_credits_pages():
+    client = create_app().test_client()
+    how = client.get("/how-it-works")
+    credits = client.get("/credits")
+    assert how.status_code == 200
+    assert credits.status_code == 200
+    credits_html = (ROOT / "web" / "static" / "credits.html").read_text(encoding="utf-8")
+    how_html = (ROOT / "web" / "static" / "how-it-works.html").read_text(encoding="utf-8")
+    assert "<table>" in credits_html
+    assert b"<table>" in credits.data
+    assert "cerebrarium" not in how_html.lower()
+    assert "cerebrarium" not in credits_html.lower()
+    assert b"cerebrarium" not in how.data.lower()
+    assert b"cerebrarium" not in credits.data.lower()
+
+
 def test_viewer_page_has_groups_clipping_and_tract_note():
     html = (ROOT / "web" / "static" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "static" / "viewer.js").read_text(encoding="utf-8")
@@ -129,12 +310,26 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'id="glass-opacity"' in html
     assert 'id="auto-rotate"' in html
     assert 'id="colour-scheme"' in html
+    assert 'Structure catalog unavailable; using manifest colours.' in script
+    assert 'id="structure-search"' in html
+    assert 'id="structure-card"' in html
+    assert "function structureMatchesQuery(" in script
+    tours = (ROOT / "web" / "static" / "tours.js").read_text(encoding="utf-8")
+    assert "buildTour" in tours
+    assert "TourPlayer" in tours
+    assert 'id="tour-bar"' in html
+    assert 'id="tour-start"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
     assert b"viewer.js?v=anatomy1" in page.data
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
     assert b'id="colour-scheme"' in page.data
+    assert b'id="structure-search"' in page.data
+    assert b'id="structure-card"' in page.data
+    assert b'id="tour-bar"' in page.data
+    assert b'id="scene-loading"' in page.data
+    assert "Loading scene…" in script
     catalog = create_app().test_client().get("/api/catalog")
     assert catalog.status_code == 200
     assert isinstance(catalog.json, list) and len(catalog.json) > 0

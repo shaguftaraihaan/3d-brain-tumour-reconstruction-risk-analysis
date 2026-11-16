@@ -48,6 +48,17 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     app.config["VOLUMES"] = {}
 
     @app.get("/")
+    def home_page():
+        return send_file(Path(app.static_folder) / "home.html")
+
+    @app.get("/how-it-works")
+    def how_it_works_page():
+        return send_file(Path(app.static_folder) / "how-it-works.html")
+
+    @app.get("/credits")
+    def credits_page():
+        return send_file(Path(app.static_folder) / "credits.html")
+
     @app.get("/viewer")
     def viewer_page():
         return send_file(Path(app.static_folder) / "index.html")
@@ -77,6 +88,10 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
                 "case_id": guess_case_id(names, folder),
             }
         )
+
+    @app.get("/api/cases")
+    def list_cases():
+        return jsonify(_list_built_cases(app))
 
     @app.post("/api/cases")
     def create_case():
@@ -109,31 +124,57 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
             if payload["status"] == "done":
                 payload["viewer"] = f"/viewer?case={case_id}"
             return jsonify(payload)
-        out = app.config["OUTPUTS"] / case_id
-        if (out / "scene.glb").is_file() and (out / "manifest.json").is_file():
-            return jsonify(
-                {
-                    "case_id": case_id,
-                    "status": "done",
-                    "stage": "Done",
-                    "viewer": f"/viewer?case={case_id}",
-                    "stages": {},
-                    "error": None,
-                    "warning": None,
-                    "elapsed": 0,
-                }
-            )
-        return jsonify({"error": f"No job for case {case_id}"}), 404
+        try:
+            _resolve_output_dir(app, case_id)
+        except FileNotFoundError:
+            return jsonify({"error": f"No job for case {case_id}"}), 404
+        return jsonify(
+            {
+                "case_id": case_id,
+                "status": "done",
+                "stage": "Done",
+                "viewer": f"/viewer?case={case_id}",
+                "stages": {},
+                "error": None,
+                "warning": None,
+                "elapsed": 0,
+            }
+        )
 
     @app.get("/api/cases/<case_id>/manifest.json")
     def manifest(case_id: str):
-        path = _output_file(app, case_id, "manifest.json")
+        try:
+            path = _output_file(app, case_id, "manifest.json")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         return send_file(path, mimetype="application/json", max_age=0)
 
     @app.get("/api/cases/<case_id>/scene.glb")
     def scene_glb(case_id: str):
-        path = _output_file(app, case_id, "scene.glb")
+        try:
+            path = _output_file(app, case_id, "scene.glb")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        accept = (request.headers.get("Accept-Encoding") or "").lower()
+        gz_path = Path(str(path) + ".gz")
+        if (
+            "gzip" in accept
+            and gz_path.is_file()
+            and gz_path.stat().st_mtime >= path.stat().st_mtime
+        ):
+            response = send_file(gz_path, mimetype="model/gltf-binary", max_age=0)
+            response.headers["Content-Encoding"] = "gzip"
+            response.headers["Vary"] = "Accept-Encoding"
+            return response
         return send_file(path, mimetype="model/gltf-binary", max_age=0)
+
+    @app.get("/api/cases/<case_id>/preview.png")
+    def case_preview(case_id: str):
+        try:
+            path = _output_file(app, case_id, "preview.png")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return send_file(path, mimetype="image/png", max_age=0)
 
     @app.get("/api/cases/<case_id>/volume")
     def volume_meta(case_id: str):
@@ -382,28 +423,118 @@ def _write_empty_seg(reference: Path, dest: Path) -> None:
     nib.save(nib.Nifti1Image(np.zeros(shape, dtype=np.uint8), image.affine), str(dest))
 
 
-def _output_file(app: Flask, case_id: str, name: str) -> Path:
+def _resolve_output_dir(app: Flask, case_id: str) -> Path:
+    """Return the built output folder for a BraTS or real (hashed) case id."""
     case_id = _safe_case_id(case_id)
-    path = app.config["OUTPUTS"] / case_id / name
+    outputs = Path(app.config["OUTPUTS"])
+    for candidate in (outputs / case_id, outputs / "real" / case_id):
+        if (candidate / "manifest.json").is_file() and (candidate / "scene.glb").is_file():
+            return candidate
+    raise FileNotFoundError(f"No built outputs for case {case_id}")
+
+
+def _output_file(app: Flask, case_id: str, name: str) -> Path:
+    path = _resolve_output_dir(app, case_id) / name
     if not path.is_file():
-        raise FileNotFoundError(f"No {name} for case {case_id}")
+        raise FileNotFoundError(f"No {name} for case {_safe_case_id(case_id)}")
     return path
 
 
 def _case_dir(app: Flask, case_id: str) -> Path:
     case_id = _safe_case_id(case_id)
-    manifest = app.config["OUTPUTS"] / case_id / "manifest.json"
-    if manifest.is_file():
-        import json
+    out = _resolve_output_dir(app, case_id)
+    manifest = out / "manifest.json"
+    import json
 
-        meta = json.loads(manifest.read_text(encoding="utf-8"))
-        recorded = meta.get("case_dir")
-        if recorded and Path(recorded).is_dir():
-            return Path(recorded)
+    meta = json.loads(manifest.read_text(encoding="utf-8"))
+    recorded = meta.get("case_dir")
+    if recorded and Path(recorded).is_dir():
+        return Path(recorded)
     fallback = app.config["CASES"] / case_id
     if fallback.is_dir():
         return fallback
     raise FileNotFoundError(f"No images for case {case_id}")
+
+
+def _is_built_output_dir(folder: Path) -> bool:
+    return folder.is_dir() and (folder / "manifest.json").is_file() and (folder / "scene.glb").is_file()
+
+
+def _thick_slices_flag(out_dir: Path) -> bool:
+    """True when preprocess.json reports any chosen series thicker than 3 mm."""
+    path = out_dir / "04_ready" / "preprocess.json"
+    if not path.is_file():
+        return False
+    import json
+
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    chosen = meta.get("series_chosen") or {}
+    for series in chosen.values():
+        if not isinstance(series, dict):
+            continue
+        thickness = series.get("slice_thickness_mm")
+        if thickness is None:
+            continue
+        try:
+            if float(thickness) > 3.0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _case_list_entry(out_dir: Path, kind: str) -> dict:
+    import json
+
+    case_id = out_dir.name
+    meta = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    structures = meta.get("structures") or {}
+    tumor_volume = 0.0
+    for key in ("edema", "necrosis", "enhancing"):
+        entry = structures.get(key) if isinstance(structures, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        volume = entry.get("volume_cm3")
+        if volume is None:
+            continue
+        try:
+            tumor_volume += float(volume)
+        except (TypeError, ValueError):
+            continue
+    has_tracts = any(
+        isinstance(entry, dict) and entry.get("group") == "Tracts"
+        for entry in (structures.values() if isinstance(structures, dict) else ())
+    )
+    preview = f"/api/cases/{case_id}/preview.png" if (out_dir / "preview.png").is_file() else None
+    return {
+        "case_id": case_id,
+        "kind": kind,
+        "structure_count": len(structures) if isinstance(structures, dict) else 0,
+        "tumor_volume_cm3": tumor_volume,
+        "has_tracts": has_tracts,
+        "thick_slices": _thick_slices_flag(out_dir),
+        "preview": preview,
+    }
+
+
+def _list_built_cases(app: Flask) -> list[dict]:
+    outputs = Path(app.config["OUTPUTS"])
+    brats: list[dict] = []
+    real: list[dict] = []
+    if outputs.is_dir():
+        for child in outputs.iterdir():
+            if child.name == "real" or not child.is_dir():
+                continue
+            if _is_built_output_dir(child):
+                brats.append(_case_list_entry(child, "brats"))
+        real_root = outputs / "real"
+        if real_root.is_dir():
+            for child in real_root.iterdir():
+                if _is_built_output_dir(child):
+                    real.append(_case_list_entry(child, "real"))
+    brats.sort(key=lambda item: item["case_id"])
+    real.sort(key=lambda item: item["case_id"])
+    return brats + real
 
 
 def _find_modality(case_dir: Path, suffix: str) -> Path:

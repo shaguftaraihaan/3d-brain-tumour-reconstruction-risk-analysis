@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BraTS brain map</title>
+  <link rel="stylesheet" href="/static/home.css">
+</head>
+<body>
+  <main class="home">
+    <header class="hero">
+      <h1>BraTS brain map</h1>
+      <p class="lede">A 3D map of one patient's brain and tumor, built automatically from their MRI.</p>
+      <p class="cta">
+        <a class="button" href="/viewer">Open a scan</a>
+      </p>
+    </header>
+
+    <section class="gallery" aria-labelledby="gallery-heading">
+      <h2 id="gallery-heading">Built cases</h2>
+      <p id="gallery-status" class="muted" role="status">Loading cases…</p>
+      <div id="case-gallery" class="case-grid"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="footer-links">
+      <a href="/how-it-works">How it works</a>
+      <a href="/credits">Credits</a>
+    </nav>
+    <p>Research and education prototype. Not a medical device. Not for diagnosis or treatment decisions.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const gallery = document.getElementById("case-gallery");
+      const status = document.getElementById("gallery-status");
+
+      function formatVolume(cm3) {
+        const n = Number(cm3);
+        if (!Number.isFinite(n)) return "0 cm³";
+        return (Math.round(n * 10) / 10) + " cm³";
+      }
+
+      function card(caseRow) {
+        const id = caseRow.case_id;
+        const kindLabel = caseRow.kind === "real"
+          ? "Patient scan (de-identified)"
+          : "BraTS dataset";
+        const viewer = "/viewer?case=" + encodeURIComponent(id);
+        const tour = viewer + "&tour=1";
+        const article = document.createElement("article");
+        article.className = "case-card";
+
+        const media = document.createElement("a");
+        media.className = "case-preview";
+        media.href = viewer;
+        if (caseRow.preview) {
+          const img = document.createElement("img");
+          img.src = caseRow.preview;
+          img.alt = "Preview of " + id;
+          media.appendChild(img);
+        } else {
+          const placeholder = document.createElement("span");
+          placeholder.className = "preview-placeholder";
+          placeholder.textContent = "No preview";
+          media.appendChild(placeholder);
+        }
+
+        const body = document.createElement("div");
+        body.className = "case-body";
+
+        const title = document.createElement("h3");
+        const titleLink = document.createElement("a");
+        titleLink.href = viewer;
+        titleLink.textContent = id;
+        title.appendChild(titleLink);
+
+        const tag = document.createElement("span");
+        tag.className = "case-tag";
+        tag.textContent = kindLabel;
+
+        const meta = document.createElement("p");
+        meta.className = "case-meta";
+        meta.textContent =
+          "Tumor " + formatVolume(caseRow.tumor_volume_cm3) +
+          " · " + String(caseRow.structure_count) + " structures";
+
+        body.appendChild(title);
+        body.appendChild(tag);
+        body.appendChild(meta);
+
+        if (caseRow.thick_slices) {
+          const note = document.createElement("p");
+          note.className = "case-note";
+          note.textContent = "Thick slices: tumor boundary is approximate";
+          body.appendChild(note);
+        }
+
+        const actions = document.createElement("p");
+        actions.className = "case-actions";
+        const open = document.createElement("a");
+        open.href = viewer;
+        open.textContent = "Open";
+        const guided = document.createElement("a");
+        guided.href = tour;
+        guided.textContent = "Guided tour";
+        actions.appendChild(open);
+        actions.appendChild(guided);
+        body.appendChild(actions);
+
+        article.appendChild(media);
+        article.appendChild(body);
+        return article;
+      }
+
+      fetch("/api/cases")
+        .then(function (response) {
+          if (!response.ok) throw new Error("Could not load cases");
+          return response.json();
+        })
+        .then(function (rows) {
+          gallery.replaceChildren();
+          if (!rows.length) {
+            status.textContent = "No built cases yet. Open a scan to build one.";
+            return;
+          }
+          status.textContent = "";
+          rows.forEach(function (row) {
+            gallery.appendChild(card(row));
+          });
+        })
+        .catch(function () {
+          status.textContent = "Could not load the case list.";
+        });
+    })();
+  </script>
+</body>
+</html>

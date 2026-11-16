@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How it works — BraTS brain map</title>
+  <link rel="stylesheet" href="/static/home.css">
+</head>
+<body>
+  <main class="home doc-page">
+    <p class="crumb"><a href="/">Home</a></p>
+    <h1>How it works</h1>
+    <p class="lede">This page restates what the code and atlas setup docs say about each stage. It does not add clinical claims.</p>
+
+    <section aria-labelledby="pipeline-heading">
+      <h2 id="pipeline-heading">Pipeline</h2>
+      <ol class="pipeline">
+        <li>
+          <h3>Scans in</h3>
+          <p>BraTS-style cases supply four MRI volumes (FLAIR, T1, T1 with contrast, T2). Real hospital studies are walked as DICOM trees; the selected FLAIR, T1, T1c, and T2 series are converted. Output folders and NIfTI headers for real studies carry a hashed study id only — no names, raw IDs, dates, or source folder names.</p>
+        </li>
+        <li>
+          <h3>Clean-up and alignment</h3>
+          <p>For real studies the pipeline N4-corrects, rigid-registers to a 1&nbsp;mm RAS reference, skull-strips once, and writes nonzero z-scored volumes. BraTS cases used for training and scoring are already skull-stripped; the brain mask is built from any modality above its background, with closing and hole filling, keeping the largest connected component.</p>
+        </li>
+        <li>
+          <h3>Tumor segmentation</h3>
+          <p>A SegResNet predicts three probability heads — enhancing tumor (ET), tumor core (TC), and whole tumor (WT) — with Gaussian sliding-window inference on a 96³ crop and flip test-time averaging in probability space. Post-processing applies thresholds from the model’s YAML config, enforces ET ⊂ TC ⊂ WT, removes small components, and applies the ET size rule. Nested tumor shells used later treat edema as WT, core as TC, and enhancing as ET.</p>
+        </li>
+        <li>
+          <h3>Anatomy</h3>
+          <p>When anatomy is enabled, <code>parcellate_case</code> runs the DIPY PyTorch SynthSeg port. SynthSeg labels follow the FreeSurfer lookup that model writes. That port has no Desikan–Killiany switch: cortex is one label per hemisphere. Subcortical SynthSeg labels are kept; frontal, parietal, temporal, occipital, and insular lobes are painted from the FSL MNI structural atlas warped with the ANTs transforms cached for tracts. The result is resampled with nearest neighbours onto the tumor grid, the dilated whole-tumor mask is cleared from every label, and <code>anatomy_seg.nii.gz</code> is written.</p>
+        </li>
+        <li>
+          <h3>Fibre pathways</h3>
+          <p>BraTS has no diffusion MRI. Pathway meshes are expected locations from the JHU white-matter tractography atlas warped from MNI into the patient T1 — not patient tractography. Every tract object is stamped <code>source="atlas-estimated"</code>. SyN registers MNI152 1&nbsp;mm T1 to the patient T1; the cost-function mask is the patient brain with the whole tumor removed after a 5-voxel dilation. Tract maps are warped with linear interpolation; voxels at or above the probability threshold (default 0.25) are meshed. Required atlas files are never downloaded; missing files raise an error pointing at the atlas setup docs. Optic radiation is optional and skipped with a warning when absent.</p>
+        </li>
+        <li>
+          <h3>Meshing</h3>
+          <p>Each binary mask is Gaussian-smoothed, padded, converted with marching cubes, Taubin-smoothed (no Laplacian), then transformed to scanner millimetres. Optional quadric decimation can reduce face count. Scene export builds tumor compartments, then glass hemispheres and interiors; lobe ids stay on cortex vertices and in the location summary and are not separate solid meshes.</p>
+        </li>
+        <li>
+          <h3>Viewing</h3>
+          <p>The Flask app serves <code>scene.glb</code>, <code>manifest.json</code>, and MRI slice images. The browser viewer loads the scene with three.js, legend groups, optional guided tour, and the note that tracts are atlas-estimated, not patient tractography.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section aria-labelledby="limits-heading">
+      <h2 id="limits-heading">What is measured and what is estimated</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Layer</th>
+              <th>Where it comes from</th>
+              <th>Measured from this patient’s scan or warped from an atlas</th>
+              <th>Known limits</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Tumor regions</td>
+              <td>SegResNet ET / TC / WT heads, then post-processing (brain mask, hierarchy ET ⊂ TC ⊂ WT, small-component removal, ET rule) and meshing of nested shells (edema = WT, core = TC, enhancing = ET).</td>
+              <td>Predicted from this patient’s four MRI volumes.</td>
+              <td>Outputs are model probabilities after fixed post-processing rules, not a radiologist outline. Thresholds and size cutoffs come from the model YAML (or untuned defaults if that file is missing).</td>
+            </tr>
+            <tr>
+              <td>Brain structures</td>
+              <td>DIPY PyTorch SynthSeg port; labels follow the FreeSurfer lookup that model writes (ventricles, brainstem, cerebellum, thalamus, basal ganglia, cortex tissue, and related meshes).</td>
+              <td>Predicted from this patient’s scan (parcellation), then meshed.</td>
+              <td>Optional: omitted unless anatomy is enabled. Anatomy near the tumor is cleared: the dilated whole-tumor mask is removed from every label before writing <code>anatomy_seg.nii.gz</code>. Glass cortex fills the tumor so the shell has no hole; white-matter glass carves the dilated tumor out.</td>
+            </tr>
+            <tr>
+              <td>Lobes</td>
+              <td>FSL MNI structural atlas (<code>MNI-maxprob-thr25-1mm</code>), warped with the same ANTs transforms used for tracts; labels replace SynthSeg cortex (3 and 42). Lobe ids are kept on cortex vertices and in the location summary.</td>
+              <td>Warped from an atlas onto this patient’s T1 / tumor grid (nearest-neighbour).</td>
+              <td>Used because the SynthSeg port has no Desikan–Killiany switch and cannot emit cortical parcels. Lobes are not separate solid meshes. This project does not download the atlas.</td>
+            </tr>
+            <tr>
+              <td>Fibre pathways</td>
+              <td>JHU white-matter tractography atlas (and optional optic-radiation maps), warped from MNI into patient T1.</td>
+              <td>Warped from an atlas. Not measured diffusion tractography from this patient.</td>
+              <td>BraTS has no diffusion MRI. Meshes are expected locations with <code>source="atlas-estimated"</code>. Tumor is excluded from the registration cost-function mask after a 5-voxel dilation. Probability maps are thresholded (default 0.25). Optic radiation is not in the JHU 4D file; a missing optional file skips that tract with a warning. Atlas files are never downloaded.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="footer-links">
+      <a href="/how-it-works">How it works</a>
+      <a href="/credits">Credits</a>
+    </nav>
+    <p>Research and education prototype. Not a medical device. Not for diagnosis or treatment decisions.</p>
+  </footer>
+</body>
+</html>
