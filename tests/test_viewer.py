@@ -179,6 +179,14 @@ def test_api_lists_brats_and_real_cases_without_paths(tmp_path=None):
     incomplete.mkdir(parents=True)
     (incomplete / "manifest.json").write_text("{}", encoding="utf-8")
 
+    uploaded = outputs / "scan1"
+    uploaded.mkdir(parents=True)
+    (uploaded / "scene.glb").write_bytes(b"upload-glb")
+    (uploaded / "manifest.json").write_text(
+        json.dumps({"case_id": "scan1", "structures": {"edema": {"volume_cm3": 0.1}}}),
+        encoding="utf-8",
+    )
+
     real = outputs / "real" / "study_abc123def456"
     real.mkdir(parents=True)
     (real / "scene.glb").write_bytes(b"real-glb")
@@ -216,9 +224,10 @@ def test_api_lists_brats_and_real_cases_without_paths(tmp_path=None):
     rows = response.json
     ids = [row["case_id"] for row in rows]
     assert "incomplete" not in ids
-    assert ids == ["BraTS20_Training_001", "study_abc123def456"]
+    assert ids == ["BraTS20_Training_001", "scan1", "study_abc123def456"]
 
-    brats_row = rows[0]
+    by_id = {row["case_id"]: row for row in rows}
+    brats_row = by_id["BraTS20_Training_001"]
     assert brats_row["kind"] == "brats"
     assert brats_row["structure_count"] == 4
     assert brats_row["tumor_volume_cm3"] == 2.25
@@ -226,13 +235,29 @@ def test_api_lists_brats_and_real_cases_without_paths(tmp_path=None):
     assert brats_row["thick_slices"] is False
     assert brats_row["preview"] == "/api/cases/BraTS20_Training_001/preview.png"
 
-    real_row = rows[1]
+    upload_row = by_id["scan1"]
+    assert upload_row["kind"] == "upload"
+    assert upload_row["structure_count"] == 1
+    assert upload_row["tumor_volume_cm3"] == 0.1
+
+    real_row = by_id["study_abc123def456"]
     assert real_row["kind"] == "real"
     assert real_row["structure_count"] == 1
     assert real_row["tumor_volume_cm3"] == 2.0
     assert real_row["has_tracts"] is False
     assert real_row["thick_slices"] is True
     assert real_row["preview"] is None
+
+    home_html = (ROOT / "web" / "static" / "home.html").read_text(encoding="utf-8")
+    assert "Uploaded scan" in home_html
+    assert "Patient scan (de-identified)" in home_html
+    assert "BraTS dataset" in home_html
+    from web.app import _case_kind
+
+    assert _case_kind("BraTS20_Training_001") == "brats"
+    assert _case_kind("study_abc123def456") == "real"
+    assert _case_kind("scan1") == "upload"
+    assert _case_kind("04_ready") == "upload"
 
     manifest = client.get("/api/cases/study_abc123def456/manifest.json")
     assert manifest.status_code == 200
@@ -255,6 +280,7 @@ def test_home_and_viewer_routes():
     assert b"Open a scan" in home.data
     home_html = (ROOT / "web" / "static" / "home.html").read_text(encoding="utf-8")
     assert "/api/cases" in home_html
+    assert "No tumor detected" in home_html
 
     viewer = client.get("/viewer")
     assert viewer.status_code == 200

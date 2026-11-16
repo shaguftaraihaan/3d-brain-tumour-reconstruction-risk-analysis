@@ -483,7 +483,16 @@ def _thick_slices_flag(out_dir: Path) -> bool:
     return False
 
 
-def _case_list_entry(out_dir: Path, kind: str) -> dict:
+def _case_kind(case_id: str) -> str:
+    """Classify a built case from its id, not from which folder holds it."""
+    if case_id.startswith("study_"):
+        return "real"
+    if case_id.startswith("BraTS"):
+        return "brats"
+    return "upload"
+
+
+def _case_list_entry(out_dir: Path) -> dict:
     import json
 
     case_id = out_dir.name
@@ -508,7 +517,7 @@ def _case_list_entry(out_dir: Path, kind: str) -> dict:
     preview = f"/api/cases/{case_id}/preview.png" if (out_dir / "preview.png").is_file() else None
     return {
         "case_id": case_id,
-        "kind": kind,
+        "kind": _case_kind(case_id),
         "structure_count": len(structures) if isinstance(structures, dict) else 0,
         "tumor_volume_cm3": tumor_volume,
         "has_tracts": has_tracts,
@@ -519,22 +528,20 @@ def _case_list_entry(out_dir: Path, kind: str) -> dict:
 
 def _list_built_cases(app: Flask) -> list[dict]:
     outputs = Path(app.config["OUTPUTS"])
-    brats: list[dict] = []
-    real: list[dict] = []
+    rows: list[dict] = []
     if outputs.is_dir():
         for child in outputs.iterdir():
             if child.name == "real" or not child.is_dir():
                 continue
             if _is_built_output_dir(child):
-                brats.append(_case_list_entry(child, "brats"))
+                rows.append(_case_list_entry(child))
         real_root = outputs / "real"
         if real_root.is_dir():
             for child in real_root.iterdir():
                 if _is_built_output_dir(child):
-                    real.append(_case_list_entry(child, "real"))
-    brats.sort(key=lambda item: item["case_id"])
-    real.sort(key=lambda item: item["case_id"])
-    return brats + real
+                    rows.append(_case_list_entry(child))
+    rows.sort(key=lambda item: (0 if item["kind"] == "brats" else 1, item["case_id"]))
+    return rows
 
 
 def _find_modality(case_dir: Path, suffix: str) -> Path:

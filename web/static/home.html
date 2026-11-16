@@ -38,7 +38,7 @@
 
       function formatVolume(cm3) {
         const n = Number(cm3);
-        if (!Number.isFinite(n)) return "0 cm³";
+        if (!Number.isFinite(n) || n === 0) return "No tumor detected";
         return (Math.round(n * 10) / 10) + " cm³";
       }
 
@@ -46,7 +46,9 @@
         const id = caseRow.case_id;
         const kindLabel = caseRow.kind === "real"
           ? "Patient scan (de-identified)"
-          : "BraTS dataset";
+          : caseRow.kind === "upload"
+            ? "Uploaded scan"
+            : "BraTS dataset";
         const viewer = "/viewer?case=" + encodeURIComponent(id);
         const tour = viewer + "&tour=1";
         const article = document.createElement("article");
@@ -82,8 +84,9 @@
 
         const meta = document.createElement("p");
         meta.className = "case-meta";
+        const volumeText = formatVolume(caseRow.tumor_volume_cm3);
         meta.textContent =
-          "Tumor " + formatVolume(caseRow.tumor_volume_cm3) +
+          (volumeText === "No tumor detected" ? volumeText : "Tumor " + volumeText) +
           " · " + String(caseRow.structure_count) + " structures";
 
         body.appendChild(title);
