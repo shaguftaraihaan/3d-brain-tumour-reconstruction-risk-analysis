@@ -58,6 +58,9 @@ BLOOD_MESH = "Possible blood products (experimental, T1-hyperintense)"
 VESSEL_NOTE = (
     "Extracted automatically from the patient's angiography. Not reviewed by a radiologist."
 )
+VESSEL_BLOOD_NOTE = (
+    "Bright blood products near a tumor can be mistaken for arteries on this scan type."
+)
 ARTERIES_MESH = "Arteries"
 VEINS_MESH = "Veins"
 

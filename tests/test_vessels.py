@@ -14,6 +14,10 @@ if str(ROOT) not in sys.path:
 
 from recon.postprocess import CONN
 from recon.vessels import (
+    ARTERY_DILATE_MM,
+    ARTERY_ENHANCE,
+    ARTERY_SIGMA_HIGH,
+    ARTERY_SIGMA_LOW,
     ENHANCE_BACKGROUND_MM,
     ENHANCE_SMOOTH_MM,
     HEAD_MARGIN_MM,
@@ -25,6 +29,12 @@ from recon.vessels import (
     MIN_COMPONENT_MM3,
     SIGMA_HIGH,
     SIGMA_LOW,
+    VEIN_DILATE_MM,
+    VEIN_ENHANCE,
+    VEIN_SIGMA_HIGH,
+    VEIN_SIGMA_LOW,
+    brain_region_mask,
+    compute_vessel_proximity,
     enhance_vessels,
     mesh_vessels,
     segment_vessels,
@@ -71,8 +81,16 @@ def _attach_dim_branch(tube: np.ndarray, length: int = 18) -> np.ndarray:
 
 
 def test_module_constants_are_named():
-    assert SIGMA_HIGH == 3.5
-    assert SIGMA_LOW == 1.5
+    assert ARTERY_SIGMA_HIGH == 6.0
+    assert ARTERY_SIGMA_LOW == 3.0
+    assert ARTERY_ENHANCE is True
+    assert VEIN_SIGMA_HIGH == 6.0
+    assert VEIN_SIGMA_LOW == 2.0
+    assert VEIN_ENHANCE is False
+    assert SIGMA_HIGH == ARTERY_SIGMA_HIGH
+    assert SIGMA_LOW == ARTERY_SIGMA_LOW
+    assert ARTERY_DILATE_MM == 12.0
+    assert VEIN_DILATE_MM == 8.0
     assert MIN_COMPONENT_MM3 == 20.0
     assert KEEP_LARGEST == 40
     assert MAD_TO_SIGMA == 1.4826
@@ -251,3 +269,84 @@ def test_mask_above_fraction_limit_returns_empty(caplog):
     inside = np.isfinite(volume) & (volume != 0)
     raw_frac = float(np.count_nonzero(volume >= 20.0)) / float(np.count_nonzero(inside))
     assert raw_frac > MAX_VESSEL_FRACTION
+
+
+def test_vessel_proximity_known_distance_and_empty_tumor():
+    import trimesh
+
+    affine = np.eye(4, dtype=np.float64)
+    label = np.zeros((12, 12, 12), dtype=np.uint8)
+    label[2, 2, 2] = 2  # whole-tumor voxel at (2, 2, 2) mm
+    # Triangle whose nearest vertex is 5 mm along z from the tumor voxel.
+    mesh = trimesh.Trimesh(
+        vertices=np.array([[2.0, 2.0, 7.0], [2.5, 2.0, 7.0], [2.0, 2.5, 7.0]], dtype=np.float64),
+        faces=[[0, 1, 2]],
+        process=False,
+    )
+    report = compute_vessel_proximity(
+        label, {"Arteries": mesh, "Veins": None}, affine
+    )
+    assert report["Veins"] is None
+    assert abs(report["Arteries"] - 5.0) < 1.0
+
+    empty = np.zeros((12, 12, 12), dtype=np.uint8)
+    quiet = compute_vessel_proximity(empty, {"Arteries": mesh, "Veins": mesh}, affine)
+    assert quiet["Arteries"] is None
+    assert quiet["Veins"] is None
+
+
+def test_region_excludes_outside_blob_and_stats_ignore_outside():
+    shape = (40, 40, 40)
+    affine = np.eye(4, dtype=np.float64)
+    rng = np.random.default_rng(4)
+    region = np.zeros(shape, dtype=bool)
+    region[8:32, 8:32, 8:32] = True
+    volume = np.zeros(shape, dtype=np.float32)
+    volume[region] = 1.0 + rng.uniform(-0.02, 0.02, size=int(np.count_nonzero(region))).astype(
+        np.float32
+    )
+    # Bright vessel inside the region.
+    volume[18:22, 18:22, 18:28] = 20.0
+    # Bright blob outside the region must never be selected.
+    volume[2:6, 2:6, 2:6] = 20.0
+
+    mask = segment_vessels(
+        volume,
+        affine,
+        head_mask=region,
+        head_margin_mm=0.0,
+        enhance=False,
+        min_component_mm3=1.0,
+    )
+    assert np.count_nonzero(mask[2:6, 2:6, 2:6]) == 0
+    assert np.count_nonzero(mask[18:22, 18:22, 18:28]) > 0
+    assert np.count_nonzero(mask & ~region) == 0
+
+    # Stats with an explicit region drop outside voxels even if the mask is dirty.
+    dirty = mask.copy()
+    dirty[2:6, 2:6, 2:6] = True
+    clipped = vessel_stats(dirty, affine, region=region)
+    clean = vessel_stats(mask, affine, region=region)
+    assert clipped["volume_cm3"] == clean["volume_cm3"]
+    assert clipped["component_count"] == clean["component_count"]
+    full = vessel_stats(dirty, affine)
+    assert full["volume_cm3"] > clean["volume_cm3"]
+
+
+def test_brain_region_mask_resampling_keeps_physical_extent():
+    # 2 mm isotropic brain grid → 1 mm vessel grid; a 10 mm cube must land within one voxel.
+    brain_affine = np.diag([2.0, 2.0, 2.0, 1.0]).astype(np.float64)
+    vessel_affine = np.eye(4, dtype=np.float64)
+    brain = np.zeros((20, 20, 20), dtype=bool)
+    # Physical cube from 20–30 mm along each axis (5 voxels × 2 mm).
+    brain[10:15, 10:15, 10:15] = True
+    region = brain_region_mask(brain, brain_affine, (40, 40, 40), vessel_affine, dilate_mm=0.0)
+    assert region.shape == (40, 40, 40)
+    coords = np.argwhere(region)
+    assert len(coords) > 0
+    lo = coords.min(axis=0).astype(float)
+    hi = coords.max(axis=0).astype(float) + 1.0  # exclusive outer edge in voxels
+    # Expected physical bounds [20, 30] mm on the 1 mm grid → voxels 20..30.
+    for axis in range(3):
+        assert abs(lo[axis] - 20.0) <= 1.0
+        assert abs(hi[axis] - 30.0) <= 1.0

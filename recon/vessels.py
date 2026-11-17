@@ -18,10 +18,17 @@ from recon.postprocess import CONN
 
 logger = logging.getLogger(__name__)
 
-# Seed threshold in robust MAD units above the in-head intensity centre.
-SIGMA_HIGH = 3.5
-# Growth threshold in robust MAD units; voxels above this join if 26-connected to a seed.
-SIGMA_LOW = 1.5
+# Locked from QC sweeps: arterial hysteresis (robust MAD units) + enhance.
+ARTERY_SIGMA_HIGH = 6.0
+ARTERY_SIGMA_LOW = 3.0
+ARTERY_ENHANCE = True
+# Locked from QC sweeps: venous hysteresis (no enhance).
+VEIN_SIGMA_HIGH = 6.0
+VEIN_SIGMA_LOW = 2.0
+VEIN_ENHANCE = False
+# Back-compat aliases — arterial defaults.
+SIGMA_HIGH = ARTERY_SIGMA_HIGH
+SIGMA_LOW = ARTERY_SIGMA_LOW
 # Drop 26-connected blobs smaller than this physical volume (mm³).
 MIN_COMPONENT_MM3 = 20.0
 # Keep at most this many components, largest first.
@@ -30,6 +37,9 @@ KEEP_LARGEST = 40
 MAD_TO_SIGMA = 1.4826
 # Erode a provided head mask by this many millimetres before thresholding.
 HEAD_MARGIN_MM = 8.0
+# Dilate the skull-strip brain mask onto the vessel grid (mm).
+ARTERY_DILATE_MM = 12.0  # keep carotids at the skull base
+VEIN_DILATE_MM = 8.0  # keep dural sinuses against the inner skull
 # Narrow Gaussian width (mm) for the vessel-enhancing fine scale.
 ENHANCE_SMOOTH_MM = 0.3
 # Wide Gaussian width (mm) subtracted to suppress bright brain banding.
@@ -66,6 +76,42 @@ def _erode_mask_mm(mask, affine, margin_mm: float) -> np.ndarray:
     spacing = _spacing_mm(affine)
     dist = ndimage.distance_transform_edt(mask, sampling=spacing)
     return dist > float(margin_mm)
+
+
+def _dilate_mask_mm(mask, affine, dilate_mm: float) -> np.ndarray:
+    """Dilate ``mask`` by ``dilate_mm`` using the affine voxel sizes."""
+    mask = np.asarray(mask, dtype=bool)
+    if dilate_mm <= 0 or not np.any(mask):
+        return mask
+    spacing = _spacing_mm(affine)
+    dist = ndimage.distance_transform_edt(~mask, sampling=spacing)
+    return dist <= float(dilate_mm)
+
+
+def brain_region_mask(brain_mask, brain_affine, vessel_shape, vessel_affine, dilate_mm) -> np.ndarray:
+    """Nearest-neighbour resample of a skull-strip mask onto the vessel grid, then dilate.
+
+    ``dilate_mm`` is applied on the vessel grid so carotids / dural sinuses near
+    the skull stay inside the analysis region.
+    """
+    import nibabel as nib
+    from nibabel.processing import resample_from_to
+
+    brain = np.asarray(brain_mask) > 0
+    brain_affine = np.asarray(brain_affine, dtype=np.float64)
+    vessel_affine = np.asarray(vessel_affine, dtype=np.float64)
+    vessel_shape = tuple(int(v) for v in vessel_shape)
+    if brain.shape == vessel_shape and np.allclose(brain_affine, vessel_affine, atol=1e-5):
+        region = brain.astype(bool, copy=True)
+    else:
+        image = nib.Nifti1Image(brain.astype(np.uint8), brain_affine)
+        resampled = resample_from_to(image, (vessel_shape, vessel_affine), order=0, cval=0.0)
+        region = np.asanyarray(resampled.dataobj) > 0
+        if region.shape != vessel_shape:
+            raise ValueError(
+                f"Resampled brain mask shape {region.shape} does not match vessel grid {vessel_shape}"
+            )
+    return _dilate_mask_mm(region, vessel_affine, float(dilate_mm))
 
 
 def _inside_mask(volume, head_mask, affine, head_margin_mm: float) -> np.ndarray:
@@ -178,9 +224,44 @@ def segment_vessels(
     return mask
 
 
-def vessel_stats(mask, affine) -> dict:
-    """Physical volume and component summary for a vessel mask."""
+def compute_vessel_proximity(tumor_label, vessel_meshes, affine) -> dict:
+    """Minimum whole-tumor distance in mm to each vessel mesh.
+
+    ``vessel_meshes`` maps ``\"Arteries\"`` / ``\"Veins\"`` to a mesh (or is
+    missing / ``None``). Reuses the tract KD-tree helpers. Returns both keys;
+    the value is ``None`` when there is no tumor or no mesh.
+    """
+    from recon.evaluate import regions_from_label
+    from recon.labels import ARTERIES_MESH, VEINS_MESH
+    from recon.tracts import _min_vertex_distance_mm, _points_mm
+
+    regions = regions_from_label(tumor_label)
+    wt = regions["WT"]
+    points = _points_mm(wt, affine)
+    meshes = vessel_meshes or {}
+    report = {}
+    for name in (ARTERIES_MESH, VEINS_MESH):
+        mesh = meshes.get(name)
+        if mesh is None or len(points) == 0:
+            report[name] = None
+            continue
+        vertices = np.asarray(getattr(mesh, "vertices", []), dtype=np.float64)
+        if vertices.size == 0:
+            report[name] = None
+            continue
+        distance = _min_vertex_distance_mm(points, vertices)
+        report[name] = None if not np.isfinite(distance) else float(distance)
+    return report
+
+
+def vessel_stats(mask, affine, region=None) -> dict:
+    """Physical volume and component summary for a vessel mask.
+
+    When ``region`` is set, voxels outside it are ignored.
+    """
     mask = np.asarray(mask, dtype=bool)
+    if region is not None:
+        mask = mask & np.asarray(region, dtype=bool)
     labeled, count = ndimage.label(mask, structure=CONN) if np.any(mask) else (mask.astype(np.int32), 0)
     total = int(np.count_nonzero(mask))
     volume_cm3 = total * _voxel_mm3(affine) / 1000.0

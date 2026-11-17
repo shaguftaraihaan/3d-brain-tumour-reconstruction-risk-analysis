@@ -731,10 +731,15 @@ function showAnatomyWarning(manifest) {
 
 function showVesselNote(manifest) {
   const el = document.querySelector("#vessel-note");
+  const blood = document.querySelector("#vessel-blood-note");
   if (!el) return;
   const text = manifest?.vessels?.note;
   el.hidden = !text;
   el.textContent = text || "";
+  if (!blood) return;
+  const bloodText = manifest?.vessels?.blood_note;
+  blood.hidden = !bloodText;
+  blood.textContent = bloodText || "";
 }
 
 function buildPanel(manifest) {
@@ -1765,18 +1770,43 @@ function buildProximity(manifest) {
   const rows = Object.entries(manifest.tract_proximity || {});
   if (!rows.length) {
     host.textContent = "No tract distances.";
+  } else {
+    const table = document.createElement("table");
+    table.innerHTML = "<thead><tr><th>Tract</th><th>WT mm</th><th>ET mm</th><th>Overlap</th></tr></thead>";
+    const body = document.createElement("tbody");
+    for (const [name, metrics] of rows) {
+      const overlap = [
+        metrics.wt_overlaps ? "WT" : "",
+        metrics.et_overlaps ? "ET" : "",
+      ].filter(Boolean).join(", ") || "no";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td></td><td>${formatMm(metrics.wt_distance_mm)}</td><td>${formatMm(metrics.et_distance_mm)}</td><td>${overlap}</td>`;
+      tr.querySelector("td").textContent = name;
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+    host.replaceChildren(table);
+  }
+  buildVesselProximity(manifest);
+}
+
+function buildVesselProximity(manifest) {
+  const section = document.querySelector("#vessel-proximity-section");
+  const host = document.querySelector("#vessel-proximity");
+  if (!section || !host) return;
+  const rows = Object.entries(manifest.vessel_proximity || {});
+  if (!rows.length) {
+    section.hidden = true;
+    host.replaceChildren();
     return;
   }
+  section.hidden = false;
   const table = document.createElement("table");
-  table.innerHTML = "<thead><tr><th>Tract</th><th>WT mm</th><th>ET mm</th><th>Overlap</th></tr></thead>";
+  table.innerHTML = "<thead><tr><th>Vessel</th><th>WT mm</th></tr></thead>";
   const body = document.createElement("tbody");
-  for (const [name, metrics] of rows) {
-    const overlap = [
-      metrics.wt_overlaps ? "WT" : "",
-      metrics.et_overlaps ? "ET" : "",
-    ].filter(Boolean).join(", ") || "no";
+  for (const [name, distance] of rows) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td></td><td>${formatMm(metrics.wt_distance_mm)}</td><td>${formatMm(metrics.et_distance_mm)}</td><td>${overlap}</td>`;
+    tr.innerHTML = `<td></td><td>${formatMm(distance)}</td>`;
     tr.querySelector("td").textContent = name;
     body.appendChild(tr);
   }

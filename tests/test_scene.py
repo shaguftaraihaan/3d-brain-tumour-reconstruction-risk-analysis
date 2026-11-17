@@ -667,7 +667,7 @@ def _stub_vessel_volume(shape=(32, 32, 32)):
 
 
 def test_build_scene_with_vessels_adds_meshes_and_manifest_key():
-    from recon.labels import VESSEL_NOTE
+    from recon.labels import VESSEL_BLOOD_NOTE, VESSEL_NOTE
 
     shape = (32, 32, 32)
     affine = np.eye(4, dtype=np.float64)
@@ -718,14 +718,29 @@ def test_build_scene_with_vessels_adds_meshes_and_manifest_key():
 
         assert "vessels" in with_vessels
         assert with_vessels["vessels"]["note"] == VESSEL_NOTE
+        assert with_vessels["vessels"]["blood_note"] == VESSEL_BLOOD_NOTE
+        assert with_vessels["vessels"]["brain_region"]["used"] is False
+        assert "brain_mask" in with_vessels["vessels"]["brain_region"]["reason"]
         assert with_vessels["vessels"]["mra"]["skipped"] is False
         assert with_vessels["vessels"]["ven"]["skipped"] is False
+        assert with_vessels["vessels"]["mra"]["enhance"] is True
+        assert with_vessels["vessels"]["mra"]["sigma_high"] == 6.0
+        assert with_vessels["vessels"]["mra"]["sigma_low"] == 3.0
+        assert with_vessels["vessels"]["mra"]["dilate_mm"] == 12.0
+        assert with_vessels["vessels"]["mra"]["brain_mask"] is False
+        assert with_vessels["vessels"]["ven"]["enhance"] is False
+        assert with_vessels["vessels"]["ven"]["sigma_high"] == 6.0
+        assert with_vessels["vessels"]["ven"]["sigma_low"] == 2.0
+        assert with_vessels["vessels"]["ven"]["dilate_mm"] == 8.0
+        assert with_vessels["vessels"]["ven"]["brain_mask"] is False
         assert "Arteries" in with_vessels["structures"]
         assert "Veins" in with_vessels["structures"]
         assert with_vessels["structures"]["Arteries"]["source"] == "patient-angiography"
         assert with_vessels["structures"]["Veins"]["source"] == "patient-venography"
         assert with_vessels["structures"]["Arteries"]["group"] == "Arteries"
         assert with_vessels["structures"]["Veins"]["group"] == "Veins"
+        assert "vessel_proximity" in with_vessels
+        assert set(with_vessels["vessel_proximity"]) == {"Arteries", "Veins"}
         out_on = root / "out_on" / "BraTS_vessels"
         assert mesh_glb_path(out_on, "Arteries").is_file()
         assert mesh_glb_path(out_on, "Veins").is_file()
@@ -733,6 +748,7 @@ def test_build_scene_with_vessels_adds_meshes_and_manifest_key():
         assert (out_on / "vessels_ven_qc.png").is_file()
 
         assert "vessels" not in without
+        assert "vessel_proximity" not in without
         assert "Arteries" not in without["structures"]
         assert "Veins" not in without["structures"]
 

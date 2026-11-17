@@ -321,6 +321,15 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "Glass + tumor" in script
     assert 'id: "vessels", label: "Vessels"' in script
     assert 'id="vessel-note"' in html
+    assert 'id="vessel-blood-note"' in html
+    assert "vessels?.blood_note" in script
+    assert "Bright blood products near a tumor can be mistaken for arteries" in (
+        ROOT / "recon" / "labels.py"
+    ).read_text(encoding="utf-8")
+    assert 'id="vessel-proximity-section"' in html
+    assert "Vessel proximity" in html
+    assert "Automatic estimate for research use. Not for surgical planning." in html
+    assert "function buildVesselProximity(" in script
     assert "patient-angiography" in script and "patient-venography" in script
     labels_src = (ROOT / "recon" / "labels.py").read_text(encoding="utf-8")
     assert '"Arteries"' in labels_src and '"Veins"' in labels_src

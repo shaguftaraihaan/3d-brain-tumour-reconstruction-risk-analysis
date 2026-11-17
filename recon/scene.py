@@ -40,6 +40,7 @@ from recon.labels import (
     RIGHT_CORTEX,
     SHELLS,
     VEINS,
+    VESSEL_BLOOD_NOTE,
     VESSEL_NOTE,
     WHITE_MATTER,
     get,
@@ -389,33 +390,128 @@ def _find_vessel_nifti(case_dir: Path | None, filename: str) -> Path | None:
     return None
 
 
-def _add_vessel_meshes(scene, out_dir, structures, exported, case_dir, case_id: str) -> dict:
-    """Segment/mesh angiography volumes when present; missing or empty is skipped."""
-    from recon.vessels import mesh_vessels, segment_vessels, vessel_stats, write_vessel_qc
+def _find_brain_mask_nifti(case_dir: Path | None) -> Path | None:
+    """Locate the skull-strip ``brain_mask.nii.gz`` next to the vessel volumes."""
+    return _find_vessel_nifti(case_dir, "brain_mask.nii.gz")
+
+
+def _add_vessel_meshes(scene, out_dir, structures, exported, case_dir, case_id: str) -> tuple[dict, dict]:
+    """Segment/mesh angiography volumes when present; missing or empty is skipped.
+
+    Returns ``(payload, meshes)`` where ``meshes`` maps mesh name to the kept
+    surface (for proximity), only for successful kinds. Per vessel type the
+    locked enhance / sigma / dilate settings are applied; when a skull-strip
+    brain mask is available it is resampled onto the vessel grid, otherwise
+    whole-FOV behaviour is kept and ``brain_mask`` is recorded false.
+    """
+    from recon.vessels import (
+        ARTERY_DILATE_MM,
+        ARTERY_ENHANCE,
+        ARTERY_SIGMA_HIGH,
+        ARTERY_SIGMA_LOW,
+        VEIN_DILATE_MM,
+        VEIN_ENHANCE,
+        VEIN_SIGMA_HIGH,
+        VEIN_SIGMA_LOW,
+        brain_region_mask,
+        mesh_vessels,
+        segment_vessels,
+        vessel_stats,
+        write_vessel_qc,
+    )
 
     kinds = (
-        ("mra", "vessels_mra.nii.gz", ARTERIES),
-        ("ven", "vessels_ven.nii.gz", VEINS),
+        (
+            "mra",
+            "vessels_mra.nii.gz",
+            ARTERIES,
+            ARTERY_SIGMA_HIGH,
+            ARTERY_SIGMA_LOW,
+            ARTERY_DILATE_MM,
+            ARTERY_ENHANCE,
+        ),
+        (
+            "ven",
+            "vessels_ven.nii.gz",
+            VEINS,
+            VEIN_SIGMA_HIGH,
+            VEIN_SIGMA_LOW,
+            VEIN_DILATE_MM,
+            VEIN_ENHANCE,
+        ),
     )
-    payload = {"note": VESSEL_NOTE}
-    for kind, filename, spec in kinds:
+    payload = {"note": VESSEL_NOTE, "blood_note": VESSEL_BLOOD_NOTE}
+    brain_path = _find_brain_mask_nifti(case_dir)
+    brain_data = None
+    brain_affine = None
+    if brain_path is None:
+        payload["brain_region"] = {
+            "used": False,
+            "reason": "missing brain_mask.nii.gz",
+        }
+    else:
+        brain_image = nib.load(str(brain_path))
+        brain_data = np.asarray(brain_image.get_fdata(dtype=np.float32)) > 0
+        brain_affine = np.asarray(brain_image.affine, dtype=np.float64)
+        payload["brain_region"] = {
+            "used": True,
+            "source": brain_path.name,
+            "artery_dilate_mm": ARTERY_DILATE_MM,
+            "vein_dilate_mm": VEIN_DILATE_MM,
+        }
+    meshes: dict = {}
+    for kind, filename, spec, sigma_high, sigma_low, dilate_mm, enhance in kinds:
+        settings = {
+            "enhance": bool(enhance),
+            "sigma_high": float(sigma_high),
+            "sigma_low": float(sigma_low),
+            "dilate_mm": float(dilate_mm),
+            "brain_mask": brain_data is not None,
+        }
         path = _find_vessel_nifti(case_dir, filename)
         if path is None:
-            payload[kind] = {"skipped": True, "reason": f"missing {filename}"}
+            payload[kind] = {"skipped": True, "reason": f"missing {filename}", **settings}
             continue
         try:
             image = nib.load(str(path))
             volume = np.asarray(image.get_fdata(dtype=np.float32))
             affine = np.asarray(image.affine, dtype=np.float64)
-            mask = segment_vessels(volume, affine)
+            region = None
+            if brain_data is not None:
+                region = brain_region_mask(
+                    brain_data, brain_affine, volume.shape, affine, dilate_mm
+                )
+                mask = segment_vessels(
+                    volume,
+                    affine,
+                    head_mask=region,
+                    head_margin_mm=0.0,
+                    sigma_high=sigma_high,
+                    sigma_low=sigma_low,
+                    enhance=enhance,
+                )
+            else:
+                mask = segment_vessels(
+                    volume,
+                    affine,
+                    sigma_high=sigma_high,
+                    sigma_low=sigma_low,
+                    enhance=enhance,
+                )
         except Exception as exc:
-            payload[kind] = {"skipped": True, "reason": str(exc), "file": path.name}
+            payload[kind] = {
+                "skipped": True,
+                "reason": str(exc),
+                "file": path.name,
+                **settings,
+            }
             continue
         if not np.any(mask):
             payload[kind] = {
                 "skipped": True,
                 "reason": "empty segmentation",
                 "file": path.name,
+                **settings,
             }
             continue
         mesh = mesh_vessels(mask, affine)
@@ -424,10 +520,12 @@ def _add_vessel_meshes(scene, out_dir, structures, exported, case_dir, case_id: 
                 "skipped": True,
                 "reason": "meshing produced no surface",
                 "file": path.name,
+                **settings,
             }
             continue
         _record_mesh(scene, out_dir, structures, exported, spec, mesh, mask, affine)
-        stats = vessel_stats(mask, affine)
+        meshes[spec.mesh_name] = mesh
+        stats = vessel_stats(mask, affine, region=region)
         qc_path = Path(out_dir) / f"{path.name.replace('.nii.gz', '').replace('.nii', '')}_qc.png"
         write_vessel_qc(volume, mask, affine, qc_path, study_id=str(case_id))
         payload[kind] = {
@@ -435,9 +533,10 @@ def _add_vessel_meshes(scene, out_dir, structures, exported, case_dir, case_id: 
             "file": path.name,
             "mesh": spec.mesh_name,
             "qc": qc_path.name,
+            **settings,
             **stats,
         }
-    return payload
+    return payload, meshes
 
 
 def _anatomy_io_role(anatomy_input: str) -> str:
@@ -1139,10 +1238,14 @@ def _export_scene(
             )
 
     vessel_info = None
+    vessel_proximity = None
     if vessels:
-        vessel_info = _add_vessel_meshes(
+        from recon.vessels import compute_vessel_proximity
+
+        vessel_info, vessel_meshes = _add_vessel_meshes(
             scene, out_dir, structures, exported, case_dir, case_id
         )
+        vessel_proximity = compute_vessel_proximity(label, vessel_meshes, affine)
 
     clock.start("export")
     write_scene_glb(scene, out_dir)
@@ -1169,6 +1272,8 @@ def _export_scene(
     }
     if vessel_info is not None:
         manifest["vessels"] = vessel_info
+    if vessel_proximity is not None:
+        manifest["vessel_proximity"] = vessel_proximity
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     progress.finish(warning=anatomy_warning)
     return manifest
