@@ -76,5 +76,24 @@
     "mode": "fast",
     "tta": 0
   },
-  "normalization": "nonzero_zscore_channelwise"
+  "normalization": "nonzero_zscore_channelwise",
+  "vessels": {
+    "mra": {
+      "series_description": "s3DI_MC_F",
+      "slice_thickness_mm": 1.6,
+      "registration_score": -0.33616696508179067,
+      "accepted": true,
+      "file": "vessels_mra.nii.gz",
+      "modality": "mra"
+    },
+    "ven": {
+      "series_description": null,
+      "slice_thickness_mm": null,
+      "registration_score": null,
+      "accepted": false,
+      "file": null,
+      "reason": "no suitable series",
+      "modality": "ven"
+    }
+  }
 }

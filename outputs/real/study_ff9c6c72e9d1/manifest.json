@@ -106,7 +106,7 @@
         -7.725645373835775,
         49.68776775264125
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Left Cortex.glb",
       "short_name": "GM-L",
@@ -135,7 +135,7 @@
         -10.045398630988643,
         54.075765589906325
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Right Cortex.glb",
       "short_name": "GM-R",
@@ -164,7 +164,7 @@
         -24.130658607984273,
         -6.495913954860441
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Left Cerebellar Cortex.glb",
       "short_name": "CbCtx-L",
@@ -193,7 +193,7 @@
         -27.995859846676915,
         -2.948307645733877
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Right Cerebellar Cortex.glb",
       "short_name": "CbCtx-R",
@@ -219,7 +219,7 @@
         214,
         89
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "file": null,
       "volume_only": true,
       "glass": false,
@@ -241,7 +241,7 @@
         -4.872424424931673,
         41.54920243545496
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Left Thalamus.glb",
       "short_name": "Thal-L",
@@ -269,7 +269,7 @@
         20.76329119320686,
         52.409769621463155
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Left Caudate.glb",
       "short_name": "Caud-L",
@@ -297,7 +297,7 @@
         17.202128577118202,
         44.10823845315019
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Left Putamen.glb",
       "short_name": "Put-L",
@@ -325,7 +325,7 @@
         -5.93723037100203,
         46.323021480954935
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Right Thalamus.glb",
       "short_name": "Thal-R",
@@ -353,7 +353,7 @@
         14.173408231542325,
         57.43100534267275
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Right Caudate.glb",
       "short_name": "Caud-R",
@@ -381,7 +381,7 @@
         12.05106942157446,
         50.60112223636271
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "proximity": null,
       "file": "Right Putamen.glb",
       "short_name": "Put-R",
@@ -420,6 +420,31 @@
       "hidden_by_default": true,
       "note": "Not validated \u2014 BraTS has no hemorrhage labels; confirmation needs SWI/GRE.",
       "experimental": true
+    },
+    "Arteries": {
+      "volume_cm3": 3.670874951112838,
+      "mesh_volume_cm3": 3.1337598711752763,
+      "volume_error_pct": -14.631799968417154,
+      "watertight": true,
+      "color": [
+        200,
+        40,
+        40,
+        255
+      ],
+      "centroid_mm": [
+        7.6445029551998545,
+        19.740048808532457,
+        18.272874380802058
+      ],
+      "source": "patient-angiography",
+      "proximity": null,
+      "file": "Arteries.glb",
+      "short_name": "Arteries",
+      "full_name": "Arteries",
+      "group": "Arteries",
+      "legend": "Arteries (from angiography)",
+      "label_id": null
     }
   },
   "legend": [
@@ -431,7 +456,7 @@
         184,
         214
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Left Cortex"
       ],
@@ -445,7 +470,7 @@
         184,
         214
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Right Cortex"
       ],
@@ -459,7 +484,7 @@
         184,
         214
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Grey matter total"
       ],
@@ -473,7 +498,7 @@
         118,
         14
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Left Thalamus",
         "Right Thalamus"
@@ -488,7 +513,7 @@
         186,
         220
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Left Caudate",
         "Right Caudate"
@@ -503,7 +528,7 @@
         13,
         176
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Left Putamen",
         "Right Putamen"
@@ -518,7 +543,7 @@
         184,
         214
       ],
-      "source": "synthseg",
+      "source": "atlas-estimated",
       "meshes": [
         "Left Cerebellar Cortex",
         "Right Cerebellar Cortex"
@@ -580,6 +605,20 @@
         "Possible blood products (experimental, T1-hyperintense)"
       ],
       "volume_cm3": 0.04999999933412113
+    },
+    {
+      "name": "Arteries (from angiography)",
+      "group": "Arteries",
+      "rgb": [
+        200,
+        40,
+        40
+      ],
+      "source": "patient-angiography",
+      "meshes": [
+        "Arteries"
+      ],
+      "volume_cm3": 3.670874951112838
     }
   ],
   "tract_proximity": {},
@@ -742,5 +781,66 @@
     "insula": 1111
   },
   "blood_products_note": "Not validated \u2014 BraTS has no hemorrhage labels; confirmation needs SWI/GRE.",
-  "anatomy_warning": null
+  "anatomy_warning": null,
+  "anatomy_method": "mni-atlas",
+  "anatomy_input": "t1",
+  "anatomy_input_reason": "plain T1 is 1.1 mm (thin enough)",
+  "stage_times_s": {
+    "seconds": {
+      "preprocess": null,
+      "inference": null,
+      "postprocess": 2.13,
+      "synthseg": 0.02,
+      "lobe_warp": 0.0,
+      "meshing": 64.18,
+      "export": 1.42
+    },
+    "status": {
+      "preprocess": "pending",
+      "inference": "pending",
+      "postprocess": "done",
+      "synthseg": "done",
+      "lobe_warp": "done",
+      "meshing": "done",
+      "export": "done"
+    },
+    "timeout_s": 1200.0
+  },
+  "vessels": {
+    "note": "Extracted automatically from the patient's angiography. Not reviewed by a radiologist.",
+    "blood_note": "Bright blood products near a tumor can be mistaken for arteries on this scan type.",
+    "brain_region": {
+      "used": true,
+      "source": "brain_mask.nii.gz",
+      "artery_dilate_mm": 12.0,
+      "vein_dilate_mm": 8.0
+    },
+    "mra": {
+      "skipped": false,
+      "file": "vessels_mra.nii.gz",
+      "mesh": "Arteries",
+      "qc": "vessels_mra_qc.png",
+      "enhance": true,
+      "sigma_high": 6.0,
+      "sigma_low": 3.0,
+      "dilate_mm": 12.0,
+      "brain_mask": true,
+      "volume_cm3": 3.670874951112838,
+      "component_count": 11,
+      "largest_component_fraction": 0.33227772670003747
+    },
+    "ven": {
+      "skipped": true,
+      "reason": "missing vessels_ven.nii.gz",
+      "enhance": false,
+      "sigma_high": 6.0,
+      "sigma_low": 2.0,
+      "dilate_mm": 8.0,
+      "brain_mask": true
+    }
+  },
+  "vessel_proximity": {
+    "Arteries": 3.085339981577024,
+    "Veins": null
+  }
 }

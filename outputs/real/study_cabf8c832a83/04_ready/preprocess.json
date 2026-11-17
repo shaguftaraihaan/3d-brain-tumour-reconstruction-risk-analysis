@@ -76,5 +76,24 @@
     "mode": "fast",
     "tta": 0
   },
-  "normalization": "nonzero_zscore_channelwise"
+  "normalization": "nonzero_zscore_channelwise",
+  "vessels": {
+    "mra": {
+      "series_description": null,
+      "slice_thickness_mm": null,
+      "registration_score": null,
+      "accepted": false,
+      "file": null,
+      "reason": "no suitable series",
+      "modality": "mra"
+    },
+    "ven": {
+      "series_description": "VEN_3D_PCA",
+      "slice_thickness_mm": 1.6,
+      "registration_score": -0.3332428839846199,
+      "accepted": true,
+      "file": "vessels_ven.nii.gz",
+      "modality": "ven"
+    }
+  }
 }
