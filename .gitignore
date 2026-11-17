@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 caches/
+
+data/cases/04_ready/
+outputs/real/*/04_ready/*.nii.gz
+outputs/04_ready/*.nii.gz
