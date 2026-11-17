@@ -316,8 +316,18 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "Hovered only" in html and 'id="label-mode"' in html
     assert 'id="screenshot"' in html
     assert "Tumor" in script and "Anatomy" in script and "Tracts" in script
+    assert "Arteries" in script and "Veins" in script
     assert "Tumor focus" in script and "Tumor + Tracts" in script
     assert "Glass + tumor" in script
+    assert 'id: "vessels", label: "Vessels"' in script
+    assert 'id="vessel-note"' in html
+    assert "patient-angiography" in script and "patient-venography" in script
+    labels_src = (ROOT / "recon" / "labels.py").read_text(encoding="utf-8")
+    assert '"Arteries"' in labels_src and '"Veins"' in labels_src
+    assert 'VESSEL_GROUPS = new Set(["Arteries", "Veins"])' in script
+    assert 'setSlider("Arteries", 1)' in script and 'setSlider("Veins", 1)' in script
+    assert 'meshesInGroup(byName, "Arteries")' in script
+    assert 'meshesInGroup(byName, "Veins")' in script
     assert 'name="anatomy" type="checkbox" checked' in html
     assert "enabled: false" in script
     assert "applyPreset(\"glass-tumor\"" in script
@@ -343,6 +353,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     tours = (ROOT / "web" / "static" / "tours.js").read_text(encoding="utf-8")
     assert "buildTour" in tours
     assert "TourPlayer" in tours
+    assert 'title: "Vessels"' in tours
     assert "function framingPose(objects, margin = 1)" in tours
     assert "framingPose(focusTargets, 1.6)" in tours
     assert 'id="tour-bar"' in html

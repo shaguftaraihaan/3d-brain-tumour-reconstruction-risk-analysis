@@ -15,11 +15,14 @@ const GROUP_ORDER = [
   "Brainstem & Cerebellum",
   "Tumor",
   "Tracts",
+  "Arteries",
+  "Veins",
   "Brain",
   "Anatomy",
 ];
 const SLICE_SEQS = ["flair", "t1", "t1c", "t2"];
 const BLOOD_NAME = "Possible blood products (experimental, T1-hyperintense)";
+const VESSEL_GROUPS = new Set(["Arteries", "Veins"]);
 const ORIENT_LETTERS = {
   0: { left: "A", right: "P", top: "S", bottom: "I" },
   1: { left: "R", right: "L", top: "S", bottom: "I" },
@@ -30,6 +33,7 @@ const PRESETS = [
   { id: "tumor-focus", label: "Tumor focus" },
   { id: "anatomy", label: "Anatomy" },
   { id: "tumor-tracts", label: "Tumor + Tracts" },
+  { id: "vessels", label: "Vessels" },
 ];
 const TUMOR_LABELS = new Set(["enhancing", "necrosis", "edema"]);
 const TISSUE_LABELS = {
@@ -437,6 +441,7 @@ async function startViewer(id) {
   document.querySelector("#case-title").textContent = manifest.case_id || id;
   showAnatomyMethodNote(manifest);
   showAnatomyWarning(manifest);
+  showVesselNote(manifest);
   buildPanel(manifest);
   buildProximity(manifest);
   buildTumorCard(manifest);
@@ -700,6 +705,8 @@ async function startViewer(id) {
 function structureGroup(entry) {
   if (entry.group) return entry.group;
   if (entry.source === "atlas-estimated") return "Tracts";
+  if (entry.source === "patient-angiography") return "Arteries";
+  if (entry.source === "patient-venography") return "Veins";
   if (entry.source === "model") return "Tumor";
   return "Anatomy";
 }
@@ -714,6 +721,14 @@ function showAnatomyWarning(manifest) {
   const el = document.querySelector("#anatomy-warning");
   if (!el) return;
   const text = manifest?.anatomy_warning;
+  el.hidden = !text;
+  el.textContent = text || "";
+}
+
+function showVesselNote(manifest) {
+  const el = document.querySelector("#vessel-note");
+  if (!el) return;
+  const text = manifest?.vessels?.note;
   el.hidden = !text;
   el.textContent = text || "";
 }
@@ -806,6 +821,8 @@ function sourcePlainWords(source) {
   if (source === "model") return "Tumor model";
   if (source === "synthseg") return "Automatic segmentation";
   if (source === "atlas-estimated") return "Atlas estimate, not measured from this scan";
+  if (source === "patient-angiography") return "Patient angiography";
+  if (source === "patient-venography") return "Patient venography";
   return source ? String(source) : null;
 }
 
@@ -1173,6 +1190,16 @@ function structureMaterial(entry, name, object) {
     const opacity = name === "White Matter" ? 0.4 : entry.group === "Ventricles" ? 0.45 : 0.7;
     return glassMaterial(object, opacity, color);
   }
+  if (VESSEL_GROUPS.has(entry.group) || entry.source === "patient-angiography" || entry.source === "patient-venography") {
+    const rgb = entry.color || [200, 40, 40];
+    return new THREE.MeshPhysicalMaterial({
+      color: srgbColor(rgb),
+      roughness: 0.35,
+      clearcoat: 0.45,
+      metalness: 0.08,
+      side: THREE.DoubleSide,
+    });
+  }
   if (name === BLOOD_NAME) {
     return new THREE.MeshStandardMaterial({
       color: new THREE.Color(0x6e1620),
@@ -1373,6 +1400,29 @@ function applyPreset(id, byName, camera, controls, root) {
     frameObjects(camera, controls, [
       ...meshesInGroup(byName, "Tumor"),
       ...meshesInGroup(byName, "Tracts"),
+    ]);
+  } else if (id === "vessels") {
+    names.forEach((name) => {
+      const mesh = byName.get(name);
+      const group = mesh.userData.group;
+      const hidden = mesh.userData.entry?.hidden_by_default;
+      const show =
+        !hidden &&
+        (Boolean(mesh.userData.glass) ||
+          group === "Tumor" ||
+          VESSEL_GROUPS.has(group) ||
+          name === "brain");
+      setVisible(byName, name, show);
+      if (group === "Tumor" || VESSEL_GROUPS.has(group)) restoreOpacity(mesh);
+    });
+    setSlider("Tumor", 1);
+    setSlider("Arteries", 1);
+    setSlider("Veins", 1);
+    frameObjects(camera, controls, [
+      ...meshesInGroup(byName, "Tumor"),
+      ...meshesInGroup(byName, "Arteries"),
+      ...meshesInGroup(byName, "Veins"),
+      ...[...byName.values()].filter((mesh) => mesh.visible && (mesh.userData.glass || mesh.name === "brain")),
     ]);
   }
   document.querySelectorAll("[data-preset]").forEach((button) => {

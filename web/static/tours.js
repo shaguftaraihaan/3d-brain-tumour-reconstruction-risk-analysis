@@ -120,6 +120,21 @@ export function buildTour(manifest) {
     focus: tracts[0] || null,
   });
 
+  const vesselNames = [
+    ...namesInGroup(manifest, "Arteries"),
+    ...namesInGroup(manifest, "Veins"),
+  ];
+  if (vesselNames.length) {
+    pushStep(steps, manifest, {
+      title: "Vessels",
+      text:
+        manifest?.vessels?.note ||
+        "Arteries and veins extracted from the patient's angiography.",
+      show: vesselNames,
+      focus: vesselNames[0] || null,
+    });
+  }
+
   return steps;
 }
 

@@ -74,6 +74,22 @@ def test_tumor_colors_and_tracts_are_atlas_estimated():
     assert right.mesh_name == "Right Corticospinal Tract"
     assert left.rgb != right.rgb
     assert left.group == "Tracts"
+    assert GROUPS.index("Arteries") == GROUPS.index("Tracts") + 1
+    assert GROUPS.index("Veins") == GROUPS.index("Arteries") + 1
+    arteries = get("Arteries")
+    veins = get("Veins")
+    assert arteries.mesh_name == "Arteries"
+    assert veins.mesh_name == "Veins"
+    assert arteries.mesh_name != veins.mesh_name
+    assert arteries.legend_name == "Arteries (from angiography)"
+    assert veins.legend_name == "Veins and sinuses (from venography)"
+    assert arteries.source == "patient-angiography"
+    assert veins.source == "patient-venography"
+    assert arteries.group == "Arteries"
+    assert veins.group == "Veins"
+    assert arteries.opacity == veins.opacity == 1.0
+    assert arteries.rgb == (200, 40, 40)
+    assert veins.rgb == (40, 90, 200)
 
 
 def test_legend_merges_a_pair_and_keeps_both_meshes():

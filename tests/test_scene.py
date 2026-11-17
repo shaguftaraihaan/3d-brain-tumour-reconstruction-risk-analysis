@@ -656,6 +656,131 @@ def test_backfill_anatomy_method_dry_run_writes_nothing():
         assert "anatomy_method" not in untouched
 
 
+def _stub_vessel_volume(shape=(32, 32, 32)):
+    """Bright tube on quiet background that segment_vessels keeps."""
+    rng = np.random.default_rng(0)
+    volume = rng.normal(0.0, 0.2, size=shape).astype(np.float32)
+    volume = np.minimum(volume, 0.0)
+    for z in range(6, 26):
+        volume[14:17, 14:17, z] = 12.0
+    return volume
+
+
+def test_build_scene_with_vessels_adds_meshes_and_manifest_key():
+    from recon.labels import VESSEL_NOTE
+
+    shape = (32, 32, 32)
+    affine = np.eye(4, dtype=np.float64)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        case_dir = root / "BraTS_vessels"
+        brain = np.zeros(shape, dtype=np.float32)
+        brain[2:30, 2:30, 2:30] = 1.0
+        _write(case_dir / "t1n.nii.gz", brain, affine)
+        vessel = _stub_vessel_volume(shape)
+        _write(case_dir / "vessels_mra.nii.gz", vessel, affine)
+        _write(case_dir / "vessels_ven.nii.gz", vessel.copy(), affine)
+        probs = np.zeros((3,) + shape, dtype=np.float32)
+        probs[2, 10:20, 10:20, 10:20] = 0.95
+        image = np.zeros((4,) + shape, dtype=np.float32)
+        image[:, 2:30, 2:30, 2:30] = 1.0
+        case = {
+            "image": image,
+            "affine": affine,
+            "case_id": "BraTS_vessels",
+            "case_dir": case_dir,
+            "probs": probs,
+        }
+        config = PostConfig(
+            threshold_et=0.5,
+            threshold_tc=0.5,
+            threshold_wt=0.5,
+            min_voxels_et=0,
+            min_voxels_tc=0,
+            min_voxels_wt=0,
+            et_min_voxels=0,
+            brain_closing_iterations=1,
+        )
+        with_vessels = build_scene(
+            case,
+            anatomy=False,
+            vessels=True,
+            output_root=root / "out_on",
+            config=config,
+        )
+        without = build_scene(
+            case,
+            anatomy=False,
+            vessels=False,
+            output_root=root / "out_off",
+            config=config,
+        )
+
+        assert "vessels" in with_vessels
+        assert with_vessels["vessels"]["note"] == VESSEL_NOTE
+        assert with_vessels["vessels"]["mra"]["skipped"] is False
+        assert with_vessels["vessels"]["ven"]["skipped"] is False
+        assert "Arteries" in with_vessels["structures"]
+        assert "Veins" in with_vessels["structures"]
+        assert with_vessels["structures"]["Arteries"]["source"] == "patient-angiography"
+        assert with_vessels["structures"]["Veins"]["source"] == "patient-venography"
+        assert with_vessels["structures"]["Arteries"]["group"] == "Arteries"
+        assert with_vessels["structures"]["Veins"]["group"] == "Veins"
+        out_on = root / "out_on" / "BraTS_vessels"
+        assert mesh_glb_path(out_on, "Arteries").is_file()
+        assert mesh_glb_path(out_on, "Veins").is_file()
+        assert (out_on / "vessels_mra_qc.png").is_file()
+        assert (out_on / "vessels_ven_qc.png").is_file()
+
+        assert "vessels" not in without
+        assert "Arteries" not in without["structures"]
+        assert "Veins" not in without["structures"]
+
+
+def test_build_scene_vessels_skips_missing_without_error():
+    shape = (16, 16, 16)
+    affine = np.eye(4, dtype=np.float64)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        case_dir = root / "BraTS_no_vessel_files"
+        brain = np.zeros(shape, dtype=np.float32)
+        brain[1:15, 1:15, 1:15] = 1.0
+        _write(case_dir / "t1n.nii.gz", brain, affine)
+        probs = np.zeros((3,) + shape, dtype=np.float32)
+        probs[2, 4:10, 4:10, 4:10] = 0.95
+        image = np.zeros((4,) + shape, dtype=np.float32)
+        image[:, 1:15, 1:15, 1:15] = 1.0
+        case = {
+            "image": image,
+            "affine": affine,
+            "case_id": "BraTS_no_vessel_files",
+            "case_dir": case_dir,
+            "probs": probs,
+        }
+        manifest = build_scene(
+            case,
+            anatomy=False,
+            vessels=True,
+            output_root=root / "out",
+            config=PostConfig(
+                threshold_et=0.5,
+                threshold_tc=0.5,
+                threshold_wt=0.5,
+                min_voxels_et=0,
+                min_voxels_tc=0,
+                min_voxels_wt=0,
+                et_min_voxels=0,
+                brain_closing_iterations=1,
+            ),
+        )
+    assert "vessels" in manifest
+    assert manifest["vessels"]["mra"]["skipped"] is True
+    assert "missing" in manifest["vessels"]["mra"]["reason"]
+    assert manifest["vessels"]["ven"]["skipped"] is True
+    assert "Arteries" not in manifest["structures"]
+    assert "Veins" not in manifest["structures"]
+
+
 if __name__ == "__main__":
     test_build_scene_exports_named_nodes_and_original_space()
     test_anatomy_is_built_before_the_tumor_and_overlap_is_remeshed()
@@ -671,4 +796,6 @@ if __name__ == "__main__":
     test_resolve_anatomy_input_without_preprocess_json_is_t1(Path(tempfile.mkdtemp()))
     test_resolve_anatomy_input_uses_preprocess_for_thick_t1(Path(tempfile.mkdtemp()))
     test_backfill_anatomy_method_dry_run_writes_nothing()
+    test_build_scene_with_vessels_adds_meshes_and_manifest_key()
+    test_build_scene_vessels_skips_missing_without_error()
     print("scene ok")

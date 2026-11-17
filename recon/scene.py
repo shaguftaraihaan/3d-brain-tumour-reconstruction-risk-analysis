@@ -26,6 +26,7 @@ from recon.anatomy import add_anatomy_meshes, centroid_mm, ensure_scene_group, m
 from recon.mesh import mesh_compartment
 from recon.evaluate import check_mesh_volume
 from recon.labels import (
+    ARTERIES,
     BLOOD_MESH,
     BLOOD_NOTE,
     BLOOD_PRODUCTS,
@@ -38,6 +39,8 @@ from recon.labels import (
     NECROSIS,
     RIGHT_CORTEX,
     SHELLS,
+    VEINS,
+    VESSEL_NOTE,
     WHITE_MATTER,
     get,
     legend_entries,
@@ -350,9 +353,16 @@ def _paint(mesh, color):
 
 
 def _add_mesh(scene, out_dir, name, mesh, group=None):
-    """Add a named node. ``group`` is the parent in ``scene.glb``."""
-    ensure_scene_group(scene, group)
-    scene.add_geometry(mesh, geom_name=name, node_name=name, parent_node_name=group)
+    """Add a named node. ``group`` is the parent in ``scene.glb``.
+
+    When the mesh name equals the group name (Arteries/Veins), parent under
+    world instead: a same-named parent is dropped on glTF round-trip, leaving
+    orphan geometry the viewer never puts in ``byName``.
+    """
+    parent = None if group is not None and group == name else group
+    if parent is not None:
+        ensure_scene_group(scene, parent)
+    scene.add_geometry(mesh, geom_name=name, node_name=name, parent_node_name=parent)
     mesh.export(mesh_glb_path(out_dir, name))
 
 
@@ -363,6 +373,71 @@ def _find_synthseg(case_dir: Path | None, explicit):
         return None
     hits = sorted(case_dir.glob("*synthseg*.nii.gz")) + sorted(case_dir.glob("*synthseg*.nii"))
     return hits[0] if hits else None
+
+
+def _find_vessel_nifti(case_dir: Path | None, filename: str) -> Path | None:
+    """Locate a vessel NIfTI in the case folder or a sibling/child ``04_ready``."""
+    if case_dir is None:
+        return None
+    root = Path(case_dir)
+    candidates = [root / filename, root / "04_ready" / filename]
+    if root.name != "04_ready":
+        candidates.append(root.parent / "04_ready" / filename)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _add_vessel_meshes(scene, out_dir, structures, exported, case_dir, case_id: str) -> dict:
+    """Segment/mesh angiography volumes when present; missing or empty is skipped."""
+    from recon.vessels import mesh_vessels, segment_vessels, vessel_stats, write_vessel_qc
+
+    kinds = (
+        ("mra", "vessels_mra.nii.gz", ARTERIES),
+        ("ven", "vessels_ven.nii.gz", VEINS),
+    )
+    payload = {"note": VESSEL_NOTE}
+    for kind, filename, spec in kinds:
+        path = _find_vessel_nifti(case_dir, filename)
+        if path is None:
+            payload[kind] = {"skipped": True, "reason": f"missing {filename}"}
+            continue
+        try:
+            image = nib.load(str(path))
+            volume = np.asarray(image.get_fdata(dtype=np.float32))
+            affine = np.asarray(image.affine, dtype=np.float64)
+            mask = segment_vessels(volume, affine)
+        except Exception as exc:
+            payload[kind] = {"skipped": True, "reason": str(exc), "file": path.name}
+            continue
+        if not np.any(mask):
+            payload[kind] = {
+                "skipped": True,
+                "reason": "empty segmentation",
+                "file": path.name,
+            }
+            continue
+        mesh = mesh_vessels(mask, affine)
+        if mesh is None:
+            payload[kind] = {
+                "skipped": True,
+                "reason": "meshing produced no surface",
+                "file": path.name,
+            }
+            continue
+        _record_mesh(scene, out_dir, structures, exported, spec, mesh, mask, affine)
+        stats = vessel_stats(mask, affine)
+        qc_path = Path(out_dir) / f"{path.name.replace('.nii.gz', '').replace('.nii', '')}_qc.png"
+        write_vessel_qc(volume, mask, affine, qc_path, study_id=str(case_id))
+        payload[kind] = {
+            "skipped": False,
+            "file": path.name,
+            "mesh": spec.mesh_name,
+            "qc": qc_path.name,
+            **stats,
+        }
+    return payload
 
 
 def _anatomy_io_role(anatomy_input: str) -> str:
@@ -499,6 +574,7 @@ def _raw_parcellation(
     and ANTs without mixing atlas/SynthSeg or T1/T1c results.
     """
     from recon.anatomy import (
+        ANATOMY_RESULT_ATLAS,
         ANATOMY_RESULT_SYNTHSEG,
         anatomy_cache_filename,
         normalize_anatomy_method,
@@ -542,15 +618,24 @@ def _raw_parcellation(
     if parc is not None:
         _stage("Anatomy")
         parc = np.rint(np.squeeze(np.asarray(parc))).astype(np.int16)
+        # Explicit ``atlas`` / ``synthseg`` keeps that stamp when reusing a
+        # precomputed volume (rebuild must not relabel MNI atlas as synthseg).
+        # ``auto`` keeps the historical synthseg stamp for external NIfTIs.
+        if method == "atlas":
+            stamped = ANATOMY_RESULT_ATLAS
+        elif method == "synthseg":
+            stamped = ANATOMY_RESULT_SYNTHSEG
+        else:
+            stamped = ANATOMY_RESULT_SYNTHSEG
         if parc.shape == tuple(shape) and source_affine is None:
             _stage("Lobes")
-            return parc, ANATOMY_RESULT_SYNTHSEG
+            return parc, stamped
         if source_affine is None:
             raise ValueError(
                 f"SynthSeg shape {parc.shape} does not match the scan grid {tuple(shape)}"
             )
         _stage("Lobes")
-        return resample_parcellation(parc, source_affine, shape, affine), ANATOMY_RESULT_SYNTHSEG
+        return resample_parcellation(parc, source_affine, shape, affine), stamped
     if case_dir is None:
         raise ValueError("case_dir is required to run SynthSeg")
     chosen = select_device(device)
@@ -732,6 +817,7 @@ def build_scene(
     *,
     anatomy=True,
     tracts=False,
+    vessels=False,
     checkpoint=None,
     device=None,
     output_root=None,
@@ -749,7 +835,8 @@ def build_scene(
     on by default. Pass ``anatomy=False`` to skip it. SynthSeg and ANTs
     transforms are cached by a hash of the four input files.
     ``anatomy_method`` is ``auto``, ``synthseg``, or ``atlas`` (see
-    ``recon.anatomy.parcellate_case``).
+    ``recon.anatomy.parcellate_case``). Pass ``vessels=True`` to mesh
+    ``vessels_mra.nii.gz`` / ``vessels_ven.nii.gz`` when present.
     """
     from recon.progress import BuildProgress
 
@@ -760,6 +847,7 @@ def build_scene(
             case,
             anatomy=anatomy,
             tracts=tracts,
+            vessels=vessels,
             checkpoint=checkpoint,
             device=device,
             output_root=output_root,
@@ -781,6 +869,7 @@ def _export_scene(
     *,
     anatomy,
     tracts,
+    vessels,
     checkpoint,
     device,
     output_root,
@@ -1049,6 +1138,12 @@ def _export_scene(
                 proximity=proximity[name],
             )
 
+    vessel_info = None
+    if vessels:
+        vessel_info = _add_vessel_meshes(
+            scene, out_dir, structures, exported, case_dir, case_id
+        )
+
     clock.start("export")
     write_scene_glb(scene, out_dir)
     clock.stop()
@@ -1072,6 +1167,8 @@ def _export_scene(
         "anatomy_input_reason": anatomy_input_reason,
         "stage_times_s": clock.as_dict(),
     }
+    if vessel_info is not None:
+        manifest["vessels"] = vessel_info
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     progress.finish(warning=anatomy_warning)
     return manifest

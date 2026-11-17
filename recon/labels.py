@@ -29,6 +29,8 @@ GROUPS = (
     "Brainstem & Cerebellum",
     "Tumor",
     "Tracts",
+    "Arteries",
+    "Veins",
 )
 
 EDEMA = "edema"
@@ -41,6 +43,7 @@ _TUMOR_EDEMA_OPACITY = 0.25
 _TUMOR_OPACITY = 1.0
 _BRAIN_OPACITY = 0.16
 _TRACT_OPACITY = 0.60
+_VESSEL_OPACITY = 1.0
 _ANATOMY_OPACITY = 0.7
 _CORTEX_OPACITY = 0.35
 _WM_OPACITY = 0.40
@@ -48,8 +51,15 @@ _GLASS_RGB = (159, 184, 214)
 _WM_RGB = (232, 220, 200)
 _VENTRICLE_GLASS_RGB = (95, 198, 232)
 _BLOOD_RGB = (110, 22, 32)
+_ARTERY_RGB = (200, 40, 40)
+_VEIN_RGB = (40, 90, 200)
 BLOOD_NOTE = "Not validated — BraTS has no hemorrhage labels; confirmation needs SWI/GRE."
 BLOOD_MESH = "Possible blood products (experimental, T1-hyperintense)"
+VESSEL_NOTE = (
+    "Extracted automatically from the patient's angiography. Not reviewed by a radiologist."
+)
+ARTERIES_MESH = "Arteries"
+VEINS_MESH = "Veins"
 
 _SIDE_ORDER = {"left": 0, "right": 1, None: 2}
 
@@ -534,6 +544,33 @@ for _key, _legend, _short, _rgb_l, _rgb_r in (
         key=f"{_key}_R",
         opacity=_TRACT_OPACITY,
     )
+
+ARTERIES = _add(
+    label_id=None,
+    full_name=ARTERIES_MESH,
+    short_name="Arteries",
+    group="Arteries",
+    rgb=_ARTERY_RGB,
+    legend_name="Arteries (from angiography)",
+    side=None,
+    source="patient-angiography",
+    mesh_name=ARTERIES_MESH,
+    key="arteries",
+    opacity=_VESSEL_OPACITY,
+)
+VEINS = _add(
+    label_id=None,
+    full_name=VEINS_MESH,
+    short_name="Veins",
+    group="Veins",
+    rgb=_VEIN_RGB,
+    legend_name="Veins and sinuses (from venography)",
+    side=None,
+    source="patient-venography",
+    mesh_name=VEINS_MESH,
+    key="veins",
+    opacity=_VESSEL_OPACITY,
+)
 
 
 def get(name: str) -> Structure:
