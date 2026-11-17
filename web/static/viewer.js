@@ -405,6 +405,10 @@ function isSolidAnatomy(name, entry) {
   if (isGlass(name, entry)) return false;
   if (TUMOR_LABELS.has(name) || name === BLOOD_NAME) return false;
   if (entry.source === "model" || entry.source === "heuristic") return false;
+  // Vessels keep their own saturated material; do not lighten toward white.
+  if (VESSEL_GROUPS.has(entry.group) || entry.source === "patient-angiography" || entry.source === "patient-venography") {
+    return false;
+  }
   return true;
 }
 
@@ -1194,9 +1198,12 @@ function structureMaterial(entry, name, object) {
     const rgb = entry.color || [200, 40, 40];
     return new THREE.MeshPhysicalMaterial({
       color: srgbColor(rgb),
-      roughness: 0.35,
-      clearcoat: 0.45,
-      metalness: 0.08,
+      roughness: 0.28,
+      clearcoat: 0.55,
+      metalness: 0.04,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
       side: THREE.DoubleSide,
     });
   }

@@ -328,6 +328,8 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'setSlider("Arteries", 1)' in script and 'setSlider("Veins", 1)' in script
     assert 'meshesInGroup(byName, "Arteries")' in script
     assert 'meshesInGroup(byName, "Veins")' in script
+    assert "VESSEL_GROUPS.has(entry.group) || entry.source === \"patient-angiography\"" in script
+    assert "transparent: false,\n      opacity: 1," in script or "transparent: false,\r\n      opacity: 1," in script
     assert 'name="anatomy" type="checkbox" checked' in html
     assert "enabled: false" in script
     assert "applyPreset(\"glass-tumor\"" in script
