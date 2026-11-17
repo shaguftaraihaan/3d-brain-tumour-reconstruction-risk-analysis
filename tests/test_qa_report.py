@@ -54,11 +54,11 @@ def test_low_precision_is_listed_before_the_gallery(tmp_path=None):
             name: {"dice": 1.0, "hd95_mm": 0.0, "precision": 0.97, "lesion_fp": 0}
             for name in ("WT", "TC", "ET")
         },
-        "volume_error_pct": {"WT": 1.0, "TC": -12.0, "ET": None},
-        "watertight": {"WT": True, "TC": True, "ET": None},
+        "volume_error_pct": {"edema": 1.0, "necrosis": -1.0, "enhancing": None},
+        "watertight": {"edema": True, "necrosis": True, "enhancing": None},
         "reasons": review_reasons(
             {name: {"precision": 0.97} for name in ("WT", "TC", "ET")},
-            {"WT": True, "TC": True, "ET": None},
+            {"edema": 1.0, "necrosis": -1.0, "enhancing": None},
         ),
         "images": record["images"],
     }
@@ -69,13 +69,13 @@ def test_low_precision_is_listed_before_the_gallery(tmp_path=None):
             name: {"dice": 0.8, "hd95_mm": 2.0, "precision": 0.95, "lesion_fp": 1}
             for name in ("WT", "TC", "ET")
         },
-        "volume_error_pct": {"WT": 0.5, "TC": None, "ET": None},
-        "watertight": {"WT": True, "TC": False, "ET": None},
+        "volume_error_pct": {"edema": 5.0, "necrosis": None, "enhancing": None},
+        "watertight": {"edema": True, "necrosis": True, "enhancing": None},
         "reasons": [],
         "images": record["images"],
     }
-    open_shell["reasons"] = review_reasons(open_shell["regions"], open_shell["watertight"])
-    assert open_shell["reasons"] == ["TC mesh not watertight"]
+    open_shell["reasons"] = review_reasons(open_shell["regions"], open_shell["volume_error_pct"])
+    assert open_shell["reasons"] == ["edema volume error +5.0%"]
 
     report = write_report([clean, record, open_shell], root / "index.html")
     text = report.read_text(encoding="utf-8")
@@ -85,8 +85,8 @@ def test_low_precision_is_listed_before_the_gallery(tmp_path=None):
     assert "open_shell" in review
     assert "clean" not in review.split("<ul>")[-1]
     assert "Dice" in text and "HD95" in text and "FP components" in text
-    assert "WT +1.0%, TC -12.0%, ET —" in text
-    assert "TC not watertight" in text
+    assert "edema +1.0%, necrosis -1.0%, enhancing —" in text
+    assert "edema +5.0%" in text
 
 
 def test_cutoffs_and_undefined_distance():
@@ -97,12 +97,12 @@ def test_cutoffs_and_undefined_distance():
     ground_truth[3, 3, 3] = 2
     assert tumor_center(ground_truth, prediction) == (3, 3, 3)
 
+    none_err = {"edema": None, "necrosis": None, "enhancing": None}
     exact = {name: {"precision": 0.9} for name in ("WT", "TC", "ET")}
-    assert review_reasons(exact, {"WT": True, "TC": True, "ET": None}) == []
-    assert review_reasons(exact) == []
+    assert review_reasons(exact, none_err) == []
     low = dict(exact)
     low["TC"] = {"precision": 0.899}
-    assert review_reasons(low, {"WT": None, "TC": None, "ET": None}) == ["TC precision 0.899"]
+    assert review_reasons(low, none_err) == ["TC precision 0.899"]
 
     import tempfile
 
@@ -114,18 +114,18 @@ def test_cutoffs_and_undefined_distance():
             name: {"dice": 0.0, "hd95_mm": float("nan"), "precision": 0.95, "lesion_fp": 0}
             for name in ("WT", "TC", "ET")
         },
-        "volume_error_pct": {"WT": None, "TC": None, "ET": None},
-        "watertight": {"WT": None, "TC": None, "ET": None},
+        "volume_error_pct": {"edema": None, "necrosis": None, "enhancing": None},
+        "watertight": {"edema": None, "necrosis": None, "enhancing": None},
         "reasons": [],
         "images": blank_images,
     }
     text = write_report([record], root / "index.html").read_text(encoding="utf-8")
     assert "— / — / —" in text
     assert "No cases flagged." in text
-    assert "WT —, TC —, ET —" in text
+    assert "edema —, necrosis —, enhancing —" in text
 
 
-def test_thin_shell_shrinkage_does_not_flag_a_case():
+def test_thin_shell_shrinkage_is_flagged_by_volume_error():
     import tempfile
 
     shape = (40, 40, 40)
@@ -148,14 +148,22 @@ def test_thin_shell_shrinkage_does_not_flag_a_case():
         Path(tempfile.mkdtemp()),
         PostConfig(0.5, 0.5, 0.5, 0, 0, 0, 0, 1),
     )
-    assert set(record["volume_error_pct"]) == {"WT", "TC", "ET"}
-    assert all(record["watertight"][name] for name in ("WT", "TC", "ET"))
-    assert all(record["volume_error_pct"][name] < -3.0 for name in ("WT", "TC", "ET"))
-    assert record["reasons"] == []
+    assert set(record["volume_error_pct"]) == {"edema", "necrosis", "enhancing"}
+    assert all(record["watertight"][name] for name in ("edema", "necrosis", "enhancing"))
+    assert all(record["volume_error_pct"][name] < -3.0 for name in ("edema", "necrosis", "enhancing"))
+    prefixes = sorted(
+        " ".join(reason.split()[:3]) for reason in record["reasons"]
+    )
+    assert prefixes == [
+        "edema volume error",
+        "enhancing volume error",
+        "necrosis volume error",
+    ]
+    assert len(record["reasons"]) == 3
 
 
 if __name__ == "__main__":
     test_cutoffs_and_undefined_distance()
     test_low_precision_is_listed_before_the_gallery()
-    test_thin_shell_shrinkage_does_not_flag_a_case()
+    test_thin_shell_shrinkage_is_flagged_by_volume_error()
     print("qa ok")

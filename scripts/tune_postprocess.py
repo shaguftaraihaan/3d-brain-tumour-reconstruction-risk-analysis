@@ -226,6 +226,55 @@ def evaluate_config(cases: list[CachedCase], config: PostConfig) -> dict:
     return {"config": config, "mean_dice": mean_dice, "mean_precision": mean_precision, "scores": scores}
 
 
+def _evaluate_config_pair(payload: tuple[list[CachedCase], PostConfig]) -> dict:
+    cases, config = payload
+    return evaluate_config(cases, config)
+
+
+def evaluate_configs(cases: list[CachedCase], configs: list[PostConfig], workers: int = 1) -> list[dict]:
+    """Return ``evaluate_config`` results in the same order as ``configs``.
+
+    ``workers == 1`` runs serially. ``workers > 1`` uses
+    ``concurrent.futures.ProcessPoolExecutor.map`` (order-preserving). On
+    Windows, large ``CachedCase`` lists are awkward to pickle under spawn, so
+    fall back to ``ThreadPoolExecutor`` instead.
+    """
+    if workers <= 1 or len(configs) <= 1:
+        return [evaluate_config(cases, config) for config in configs]
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+    import sys
+
+    payloads = [(cases, config) for config in configs]
+    if sys.platform == "win32":
+        # Spawn + pickling the full cropped cache per worker is unreliable/heavy on Windows.
+        with ThreadPoolExecutor(max_workers=int(workers)) as executor:
+            return list(executor.map(_evaluate_config_pair, payloads))
+    with ProcessPoolExecutor(max_workers=int(workers)) as executor:
+        return list(executor.map(_evaluate_config_pair, payloads))
+
+
+def grid_edges(config: PostConfig) -> list[str]:
+    """Parameters of ``config`` that sit on the edge of the searched grid.
+
+    Thresholds equal to the min or max of ``THRESHOLD_VALUES`` are listed in
+    ET/TC/WT order; component sizes are listed when they match the first or
+    last row of ``MIN_COMPONENT_GRID``.
+    """
+    lo = min(THRESHOLD_VALUES)
+    hi = max(THRESHOLD_VALUES)
+    edges = [
+        f"{name} threshold {config.threshold(name):.2f}"
+        for name in _HEADS
+        if config.threshold(name) in (lo, hi)
+    ]
+    mins = _min_voxels(config)
+    if mins in (MIN_COMPONENT_GRID[0], MIN_COMPONENT_GRID[-1]):
+        edges.append(
+            "component sizes " + "/".join(str(config.min_voxels(name)) for name in _HEADS)
+        )
+    return edges
+
+
 def evaluate_raw(cases: list[CachedCase], threshold=0.5) -> dict:
     def masks_for_case(case: CachedCase):
         return raw_region_masks(np.asarray(case.probs, dtype=np.float32), case.brain, threshold)
@@ -383,6 +432,12 @@ def run(
         f"dice={post_summary['mean_dice']:.4f} prec={post_summary['mean_precision']:.4f}",
         flush=True,
     )
+    edges = grid_edges(chosen)
+    if edges:
+        print(
+            f"note: winner is at the edge of the grid ({', '.join(edges)}); a wider grid may do better",
+            flush=True,
+        )
     print(f"wrote {config_path}", flush=True)
     print(f"wrote {report_path}", flush=True)
     return chosen
