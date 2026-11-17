@@ -1,2 +1,14 @@
 *.pt
 third_party/
+__pycache__/
+*.pyc
+docs/landing_drop/
+.DS_Store
+*.nii
+*.nii.gz
+*.npy
+*.h5
+*.ckpt
+outputs/real/
+data/private/
+data/

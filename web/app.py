@@ -48,6 +48,9 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     app.config["VOLUMES"] = {}
 
     @app.get("/")
+    def landing_page():
+        return send_file(Path(app.static_folder) / "landing.html")
+
     @app.get("/viewer")
     def viewer_page():
         return send_file(Path(app.static_folder) / "index.html")
@@ -71,6 +74,22 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
                 "case_id": guess_case_id(names, folder),
             }
         )
+
+    @app.get("/api/cases")
+    def list_cases():
+        """IDs of finished cases under outputs/ (no paths or patient info)."""
+        outputs = Path(app.config["OUTPUTS"])
+        ids: list[str] = []
+        if outputs.is_dir():
+            for path in sorted(outputs.iterdir()):
+                if not path.is_dir():
+                    continue
+                name = path.name
+                if not _CASE_ID.match(name):
+                    continue
+                if (path / "scene.glb").is_file() and (path / "manifest.json").is_file():
+                    ids.append(name)
+        return jsonify({"cases": ids})
 
     @app.post("/api/cases")
     def create_case():
@@ -206,16 +225,98 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
             index = int(request.args.get("index", "0"))
         except (TypeError, ValueError):
             return jsonify({"error": "axis and index must be integers"}), 400
+        source = (request.args.get("source") or "model").strip().lower()
+        if source not in {"model", "second", "prob"}:
+            return jsonify({"error": "source must be model, second, or prob"}), 400
         try:
-            label = _cached_pred(app, case_id)
+            if source == "model":
+                label = _cached_pred(app, case_id)
+            elif source == "second":
+                label = _cached_second_mask(app, case_id)
+            else:
+                label = None
+                prob = _cached_wt_prob(app, case_id)
         except FileNotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
+        if source == "prob":
+            if axis not in (0, 1, 2):
+                return jsonify({"error": "axis must be 0, 1, or 2"}), 400
+            if index < 0 or index >= prob.shape[axis]:
+                return jsonify({"error": f"index {index} is outside axis {axis} (length {prob.shape[axis]})"}), 400
+            png = _cached_prob_png(app, case_id, prob, axis, index)
+            return send_file(io.BytesIO(png), mimetype="image/png", max_age=120)
         if axis not in (0, 1, 2):
             return jsonify({"error": "axis must be 0, 1, or 2"}), 400
         if index < 0 or index >= label.shape[axis]:
             return jsonify({"error": f"index {index} is outside axis {axis} (length {label.shape[axis]})"}), 400
-        png = _cached_overlay_png(app, case_id, label, axis, index)
+        tag = "overlay" if source == "model" else "overlay_second"
+        png = _cached_overlay_png(app, case_id, label, axis, index, tag=tag)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=120)
+
+    @app.get("/api/cases/<case_id>/location.json")
+    def location_json(case_id: str):
+        try:
+            case_id = _safe_case_id(case_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        path = app.config["OUTPUTS"] / case_id / "location.json"
+        if path.is_file():
+            return send_file(path, mimetype="application/json", max_age=0)
+        return jsonify(_build_location_report(app, case_id))
+
+    @app.get("/api/cases/<case_id>/uncertainty")
+    def uncertainty_meta(case_id: str):
+        try:
+            case_id = _safe_case_id(case_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        out = app.config["OUTPUTS"] / case_id
+        has_model = (out / "pred_seg.nii.gz").is_file()
+        has_second = False
+        try:
+            second = _find_second_mask(app, case_id)
+            has_second = second is not None
+        except FileNotFoundError:
+            has_second = False
+        has_prob = (out / "wt_prob.nii.gz").is_file()
+        dice = None
+        if has_model and has_second:
+            try:
+                dice = _mask_dice(app, case_id)
+            except Exception as exc:  # noqa: BLE001 — surface as null, not 500
+                logger.warning("dice failed for %s: %s", case_id, exc)
+                dice = None
+        return jsonify(
+            {
+                "has_model": has_model,
+                "has_second": has_second,
+                "has_prob": has_prob,
+                "dice": dice,
+                "sources": {
+                    "model": "pred_seg.nii.gz" if has_model else None,
+                    "second": "seg.nii.gz" if has_second else None,
+                    "prob": "wt_prob.nii.gz" if has_prob else None,
+                },
+            }
+        )
+
+    @app.get("/api/cases/<case_id>/report.pdf")
+    def report_pdf(case_id: str):
+        try:
+            case_id = _safe_case_id(case_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        try:
+            pdf = _build_report_pdf(app, case_id)
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        return send_file(
+            io.BytesIO(pdf),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"{case_id}_report.pdf",
+            max_age=0,
+        )
 
     return app
 
@@ -346,12 +447,14 @@ def _upload_model() -> tuple[str, Path]:
 
     ``BRATS_UPLOAD_MODEL=ours`` forces the local checkpoint.
     """
-    from recon.infer import ABHINAV_CHECKPOINT, ABHINAV_V3, OURS
+    from recon.infer import ABHINAV_V3, OURS, abhinav_checkpoint_candidates
     from scripts.reconstruct import default_checkpoint
 
     wanted = os.environ.get("BRATS_UPLOAD_MODEL", ABHINAV_V3)
-    if wanted == ABHINAV_V3 and Path(ABHINAV_CHECKPOINT).is_file():
-        return ABHINAV_V3, Path(ABHINAV_CHECKPOINT)
+    if wanted == ABHINAV_V3:
+        for path in abhinav_checkpoint_candidates():
+            if path.is_file():
+                return ABHINAV_V3, path
     return OURS, default_checkpoint()
 
 
@@ -545,15 +648,259 @@ def _cached_slice_png(app, case_id, modality, data, axis, index, lo, hi, alpha=N
     return png
 
 
-def _cached_overlay_png(app, case_id, label, axis, index) -> bytes:
+def _cached_overlay_png(app, case_id, label, axis, index, *, tag: str = "overlay") -> bytes:
     from recon.slices import cache_path, render_overlay_png
 
-    path = cache_path(_slice_cache_dir(app, case_id), "overlay", axis, index)
+    path = cache_path(_slice_cache_dir(app, case_id), tag, axis, index)
     if path.is_file():
         return path.read_bytes()
     png = render_overlay_png(label, axis, index)
     path.write_bytes(png)
     return png
+
+
+def _cached_prob_png(app, case_id, prob, axis, index) -> bytes:
+    from recon.slices import cache_path, orient_ras_slice
+
+    path = cache_path(_slice_cache_dir(app, case_id), "wt_prob", axis, index)
+    if path.is_file():
+        return path.read_bytes()
+    plane = np.clip(np.asarray(orient_ras_slice(prob, axis, index), dtype=np.float32), 0.0, 1.0)
+    rgba = np.zeros(plane.shape + (4,), dtype=np.uint8)
+    # Magenta→yellow heat; transparent where probability is near zero.
+    rgba[..., 0] = np.clip(255 * plane, 0, 255).astype(np.uint8)
+    rgba[..., 1] = np.clip(255 * (plane * 0.55), 0, 255).astype(np.uint8)
+    rgba[..., 2] = np.clip(255 * (1.0 - plane) * plane * 2.0, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(255 * plane * 0.85, 0, 255).astype(np.uint8)
+    image = Image.fromarray(rgba, mode="RGBA")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    png = buffer.getvalue()
+    path.write_bytes(png)
+    return png
+
+
+def _load_manifest(app: Flask, case_id: str) -> dict:
+    import json
+
+    path = _output_file(app, case_id, "manifest.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _tumor_volumes_ml(manifest: dict) -> dict[str, float]:
+    structures = manifest.get("structures") or {}
+    edema = float((structures.get("edema") or {}).get("volume_cm3") or 0.0)
+    necrosis = float((structures.get("necrosis") or {}).get("volume_cm3") or 0.0)
+    enhancing = float((structures.get("enhancing") or {}).get("volume_cm3") or 0.0)
+    return {
+        "wt_ml": edema + necrosis + enhancing,
+        "tc_ml": necrosis + enhancing,
+        "et_ml": enhancing,
+        "edema_ml": edema,
+        "necrosis_ml": necrosis,
+    }
+
+
+def _build_location_report(app: Flask, case_id: str) -> dict:
+    """Synthesize a location report from manifest when location.json is absent."""
+    VOLUME_FLOOR_ML = 20.9
+    manifest = _load_manifest(app, case_id)
+    volumes = _tumor_volumes_ml(manifest)
+    tumor_location = manifest.get("tumor_location") or {"WT": [], "ET": [], "margin_mm": 10.0}
+    warning = (manifest.get("anatomy_warning") or "").strip()
+    nearest = list(tumor_location.get("WT") or [])
+    has_nearest = bool(nearest)
+    if warning:
+        qc_status = "unreliable"
+        reasons = [warning.splitlines()[0]]
+        withheld = True
+        withheld_reason = warning.splitlines()[0]
+    elif not has_nearest:
+        qc_status = "caution"
+        reasons = ["No overlapping or nearby structures were recorded for this case."]
+        withheld = True
+        withheld_reason = reasons[0]
+    else:
+        qc_status = "good"
+        reasons = []
+        withheld = False
+        withheld_reason = None
+    below_floor = volumes["wt_ml"] > 0 and volumes["wt_ml"] < VOLUME_FLOOR_ML
+    if below_floor:
+        qc_status = "unreliable" if qc_status != "good" else "caution"
+        reasons.append(f"Whole-tumor volume {volumes['wt_ml']:.1f} mL is below the {VOLUME_FLOOR_ML} mL size floor.")
+        if not withheld:
+            withheld = True
+            withheld_reason = reasons[-1]
+    headline = None
+    if not withheld and nearest:
+        top = nearest[0]
+        if top.get("relation") == "overlaps":
+            headline = f"Whole tumor overlaps {top['name']}."
+        else:
+            headline = f"Whole tumor is {float(top.get('distance_mm') or 0):.1f} mm from {top['name']}."
+    return {
+        "case_id": case_id,
+        "qc": {"status": qc_status, "reasons": reasons},
+        "plausibility": {
+            "floor_ml": VOLUME_FLOOR_ML,
+            "wt_ml": round(volumes["wt_ml"], 3),
+            "passed": not below_floor and volumes["wt_ml"] > 0,
+        },
+        "volumes_ml": {key: round(value, 3) for key, value in volumes.items()},
+        "tumor_location": tumor_location,
+        "nearest": nearest,
+        "headline": headline,
+        "withheld": withheld,
+        "withheld_reason": withheld_reason,
+        "sequences": ["FLAIR", "T1", "T1c", "T2"],
+        "segmentation_labels": ["necrosis", "edema", "enhancing"],
+        "model_note": "model-estimated, unverified",
+    }
+
+
+def _find_second_mask(app: Flask, case_id: str) -> Path | None:
+    case_dir = _case_dir(app, case_id)
+    for name in ("seg.nii.gz", "seg.nii"):
+        path = case_dir / name
+        if not path.is_file():
+            continue
+        image = nib.as_closest_canonical(nib.load(str(path)))
+        data = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        if np.any(data):
+            return path
+    return None
+
+
+def _cached_second_mask(app: Flask, case_id: str):
+    cache = app.config["VOLUMES"]
+    key = (case_id, "second")
+    if key not in cache:
+        path = _find_second_mask(app, case_id)
+        if path is None:
+            raise FileNotFoundError(f"No second mask for case {case_id}")
+        image = nib.as_closest_canonical(nib.load(str(path)))
+        data = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        if data.ndim != 3:
+            raise ValueError("second mask is not a 3D volume")
+        cache[key] = data
+    return cache[key]
+
+
+def _cached_wt_prob(app: Flask, case_id: str):
+    cache = app.config["VOLUMES"]
+    key = (case_id, "wt_prob")
+    if key not in cache:
+        path = _output_file(app, case_id, "wt_prob.nii.gz")
+        image = nib.as_closest_canonical(nib.load(str(path)))
+        data = np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))
+        if data.ndim != 3:
+            raise ValueError("wt_prob is not a 3D volume")
+        cache[key] = np.clip(data, 0.0, 1.0)
+    return cache[key]
+
+
+def _mask_dice(app: Flask, case_id: str) -> dict:
+    from recon.evaluate import region_overlap, regions_from_label
+
+    pred = _cached_pred(app, case_id)
+    second = _cached_second_mask(app, case_id)
+    if pred.shape != second.shape:
+        raise ValueError(f"Mask shapes differ: pred {pred.shape} vs second {second.shape}")
+    pred_regions = regions_from_label(pred)
+    gt_regions = regions_from_label(second)
+    out = {}
+    for name in ("WT", "TC", "ET"):
+        dice, _precision, _recall = region_overlap(pred_regions[name], gt_regions[name])
+        out[name.lower()] = round(float(dice), 4)
+    return out
+
+
+def _build_report_pdf(app: Flask, case_id: str) -> bytes:
+    """One-page PDF: volumes, three key views, QC badges, caveats."""
+    from PIL import ImageDraw, ImageFont
+
+    manifest = _load_manifest(app, case_id)
+    location = _build_location_report(app, case_id)
+    volumes = location["volumes_ml"]
+    page = Image.new("RGB", (1240, 1754), (18, 22, 28))
+    draw = ImageDraw.Draw(page)
+    try:
+        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 36)
+        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
+        font_small = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 16)
+    except OSError:
+        font_title = ImageFont.load_default()
+        font = font_title
+        font_small = font_title
+
+    y = 48
+    draw.text((48, y), f"Case explorer report — {case_id}", fill=(236, 242, 248), font=font_title)
+    y += 56
+    draw.text((48, y), "Research prototype, not for diagnosis.", fill=(240, 180, 90), font=font)
+    y += 36
+    draw.text((48, y), "Model-estimated, unverified.", fill=(160, 176, 196), font=font_small)
+    y += 40
+    qc = location["qc"]["status"]
+    floor = "passed" if location["plausibility"]["passed"] else "below floor"
+    draw.text((48, y), f"Registration QC: {qc}    Plausibility: {floor}", fill=(200, 214, 230), font=font)
+    y += 40
+    draw.text(
+        (48, y),
+        f"Whole tumor {volumes['wt_ml']:.1f} mL   Tumor core {volumes['tc_ml']:.1f} mL   Enhancing {volumes['et_ml']:.1f} mL",
+        fill=(236, 242, 248),
+        font=font,
+    )
+    y += 48
+    if location.get("withheld"):
+        draw.text((48, y), f"Location withheld: {location.get('withheld_reason') or 'QC'}", fill=(240, 160, 120), font=font_small)
+        y += 32
+    elif location.get("headline"):
+        draw.text((48, y), location["headline"], fill=(200, 214, 230), font=font_small)
+        y += 32
+
+    # Three key axial views (FLAIR + overlay at mid tumor).
+    try:
+        data, _affine = _cached_volume(app, case_id, "flair")
+        pred = _cached_pred(app, case_id)
+        from recon.evaluate import regions_from_label
+
+        wt = regions_from_label(pred)["WT"]
+        if np.any(wt):
+            zs = np.where(np.any(wt, axis=(0, 1)))[0]
+            indices = [int(zs[len(zs) // 4]), int(zs[len(zs) // 2]), int(zs[(3 * len(zs)) // 4])]
+        else:
+            mid = data.shape[2] // 2
+            indices = [max(mid - 8, 0), mid, min(mid + 8, data.shape[2] - 1)]
+        brain = _brain_mask(app, case_id, data)
+        lo, hi = _window_for(data, brain if brain is not None and brain.shape == data.shape else None)
+        alpha = _combined_foreground(app, case_id, data.shape)
+        x = 48
+        for index in indices:
+            mri = Image.open(io.BytesIO(_cached_slice_png(app, case_id, "flair", data, 2, index, lo, hi, alpha=alpha))).convert("RGBA")
+            overlay = Image.open(io.BytesIO(_cached_overlay_png(app, case_id, pred, 2, index))).convert("RGBA")
+            composed = Image.alpha_composite(mri, overlay).convert("RGB").resize((360, 360))
+            page.paste(composed, (x, y))
+            draw.text((x, y + 368), f"Axial z={index}", fill=(160, 176, 196), font=font_small)
+            x += 380
+        y += 420
+    except Exception as exc:  # noqa: BLE001
+        draw.text((48, y), f"Views unavailable: {exc}", fill=(240, 160, 120), font=font_small)
+        y += 36
+
+    y = max(y, 1500)
+    caveats = [
+        "Caveats: atlas tracts are not patient tractography.",
+        "Do not use for clinical diagnosis or treatment decisions.",
+        "Scans were processed locally; this report contains no patient identifiers beyond the case ID.",
+    ]
+    for line in caveats:
+        draw.text((48, y), line, fill=(140, 156, 172), font=font_small)
+        y += 28
+
+    buffer = io.BytesIO()
+    page.save(buffer, format="PDF", resolution=150.0)
+    return buffer.getvalue()
 
 
 def _slice_png(volume: np.ndarray, axis: int, index: int) -> bytes:

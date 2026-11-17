@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BraTS viewer</title>
-  <link rel="stylesheet" href="/static/viewer.css?v=anatomy1">
+  <title>Case explorer</title>
+  <link rel="stylesheet" href="/static/viewer.css?v=explorer1">
   <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+        "three": "/static/vendor/three/three.module.js",
+        "three/addons/": "/static/vendor/three/"
       }
     }
   </script>
@@ -17,8 +17,17 @@
 <body>
   <section id="upload-screen">
     <form id="upload-form">
+      <p class="brand">Case explorer</p>
       <h1>Open a scan</h1>
-      <p>Add the folder with the MRI scans. You don't need to know which file is which: we read the file names and show what we found.</p>
+      <p class="privacy-note">Scans are processed on this computer. Do not upload real patient data unless approved.</p>
+      <p class="lead">Add the folder with the MRI scans. You don't need to know which file is which: we read the file names and show what we found.</p>
+
+      <section id="case-picker" aria-label="Existing cases">
+        <h2>Existing cases</h2>
+        <p class="muted" id="case-picker-status">Looking for finished cases…</p>
+        <ul id="case-list"></ul>
+      </section>
+
       <div id="drop-zone" tabindex="0" role="button" aria-label="Add the scan folder">
         <strong>Drag the scan folder here</strong>
         <span>or</span>
@@ -52,12 +61,87 @@
   </section>
 
   <div id="viewer" hidden>
-    <canvas id="view"></canvas>
+    <p id="research-banner" role="note">Research prototype, not for diagnosis</p>
+
+    <div id="view-wrap">
+      <canvas id="view"></canvas>
+      <div id="view-state" class="panel-state" hidden role="status">
+        <p class="state-message">Loading 3D scene…</p>
+        <button type="button" class="retry" hidden>Retry</button>
+      </div>
+      <div id="tour-overlay" hidden>
+        <div class="tour-progress" aria-hidden="true"><span id="tour-progress-fill"></span></div>
+        <p id="tour-caption"></p>
+        <div class="tour-controls">
+          <button type="button" id="tour-back">Back</button>
+          <button type="button" id="tour-next">Next</button>
+          <button type="button" id="tour-exit" class="ghost">Esc</button>
+        </div>
+      </div>
+    </div>
+
     <aside id="panel">
-      <h1 id="case-title">Case</h1>
+      <header class="panel-head">
+        <h1 id="case-title">Case</h1>
+        <p id="model-badge" class="trust-chip always">model-estimated, unverified</p>
+      </header>
       <p id="anatomy-warning" hidden></p>
       <p id="tract-note" hidden>Tracts are atlas-estimated, not patient tractography.</p>
-      <div id="presets"></div>
+
+      <section id="trust-badges" aria-label="Trust">
+        <span id="qc-badge" class="trust-chip">QC —</span>
+        <span id="plausibility-badge" class="trust-chip">Plausibility —</span>
+      </section>
+
+      <section id="volume-card" aria-label="Tumor volumes">
+        <div class="section-head">
+          <h2>Volumes</h2>
+          <a id="download-report" class="button-link" href="#">Download report</a>
+        </div>
+        <div id="volume-summary" class="volume-grid">
+          <div><span class="vol-label">Whole tumor</span><span id="vol-wt" class="vol-value">—</span></div>
+          <div><span class="vol-label">Tumor core</span><span id="vol-tc" class="vol-value">—</span></div>
+          <div><span class="vol-label">Enhancing</span><span id="vol-et" class="vol-value">—</span></div>
+        </div>
+        <p id="volume-floor-chip" class="warn-chip" hidden>
+          Whole-tumor volume is below the 20.9 mL BraTS size floor
+        </p>
+      </section>
+
+      <section id="tour-card">
+        <button type="button" id="start-tour" class="primary">Start tour</button>
+        <button type="button" id="shortcuts-help-btn" class="ghost">Shortcuts</button>
+      </section>
+
+      <div id="presets" role="group" aria-label="View presets"></div>
+
+      <section id="structure-explorer" aria-label="Structure explorer">
+        <h2>Structure explorer</h2>
+        <label class="field">Search
+          <input id="structure-search" type="search" autocomplete="off" placeholder="Find a structure">
+        </label>
+        <ul id="structure-suggest" hidden></ul>
+        <div id="structure-card" class="structure-card" hidden>
+          <h3 id="structure-card-name"></h3>
+          <p id="structure-card-meta"></p>
+          <div class="mode-row" role="group" aria-label="Display mode">
+            <button type="button" data-mode="isolate">Isolate</button>
+            <button type="button" data-mode="context">In context</button>
+            <button type="button" data-mode="ghost">Ghost</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="uncertainty-card" aria-label="Uncertainty">
+        <h2>Uncertainty</h2>
+        <div id="uncertainty-modes" class="mode-row" role="group">
+          <button type="button" data-unc="model" class="is-active">Model mask</button>
+          <button type="button" data-unc="second" disabled>Second mask</button>
+          <button type="button" data-unc="prob" disabled>Probability</button>
+        </div>
+        <p id="uncertainty-dice" class="muted">Dice unavailable until two masks are present.</p>
+      </section>
+
       <label class="label-mode">Labels
         <select id="label-mode">
           <option value="hover" selected>Hovered only</option>
@@ -74,12 +158,18 @@
       <label class="check"><input id="lobe-tint" type="checkbox"> Lobe tint</label>
       <label class="check"><input id="auto-rotate" type="checkbox"> Auto-rotate</label>
       <button id="screenshot" type="button">Save PNG</button>
+
       <section id="tumor-card">
         <h2>Tumor location</h2>
+        <p id="tumor-summary-line" class="tumor-one-liner"></p>
         <div id="tumor-location"></div>
+        <button type="button" id="location-toggle" class="link" hidden>Show all</button>
+        <p id="location-legend" class="legend" hidden></p>
         <p id="blood-note" hidden></p>
       </section>
+
       <div id="groups"></div>
+
       <section>
         <h2>MRI slice</h2>
         <p class="muted">The 2×2 panel matches this plane. Change sequence to recolour the 3D cut.</p>
@@ -93,88 +183,116 @@
         </label>
         <div id="clip-controls"></div>
       </section>
+
       <section>
         <h2>Tract proximity</h2>
         <div id="proximity"></div>
       </section>
     </aside>
+
     <section id="slices-panel">
-      <header>
-        <h2>Slices</h2>
-        <div class="slice-orients" role="group" aria-label="Slice orientation">
-          <button type="button" data-orient="2" class="is-active">Axial</button>
-          <button type="button" data-orient="1">Coronal</button>
-          <button type="button" data-orient="0">Sagittal</button>
+      <details id="slices-details" open>
+        <summary>
+          <span>Slices</span>
+          <span class="slice-orients" role="group" aria-label="Slice orientation">
+            <button type="button" data-orient="2" class="is-active">Axial</button>
+            <button type="button" data-orient="1">Coronal</button>
+            <button type="button" data-orient="0">Sagittal</button>
+          </span>
+        </summary>
+        <div id="slices-body">
+          <div id="slice-state" class="panel-state" hidden role="status">
+            <p class="state-message">Loading slices…</p>
+            <button type="button" class="retry" hidden>Retry</button>
+          </div>
+          <div id="acs-strip" aria-label="Linked orthogonal slices">
+            <figure data-acs="2"><canvas></canvas><figcaption>Axial</figcaption></figure>
+            <figure data-acs="1"><canvas></canvas><figcaption>Coronal</figcaption></figure>
+            <figure data-acs="0"><canvas></canvas><figcaption>Sagittal</figcaption></figure>
+          </div>
+          <div id="slice-grid">
+            <figure data-seq="flair">
+              <div class="slice-frame">
+                <span class="orient top" data-edge="top"></span>
+                <span class="orient bottom" data-edge="bottom"></span>
+                <span class="orient left" data-edge="left"></span>
+                <span class="orient right" data-edge="right"></span>
+                <canvas></canvas>
+              </div>
+              <figcaption>FLAIR</figcaption>
+            </figure>
+            <figure data-seq="t1">
+              <div class="slice-frame">
+                <span class="orient top" data-edge="top"></span>
+                <span class="orient bottom" data-edge="bottom"></span>
+                <span class="orient left" data-edge="left"></span>
+                <span class="orient right" data-edge="right"></span>
+                <canvas></canvas>
+              </div>
+              <figcaption>T1</figcaption>
+            </figure>
+            <figure data-seq="t1c">
+              <div class="slice-frame">
+                <span class="orient top" data-edge="top"></span>
+                <span class="orient bottom" data-edge="bottom"></span>
+                <span class="orient left" data-edge="left"></span>
+                <span class="orient right" data-edge="right"></span>
+                <canvas></canvas>
+              </div>
+              <figcaption>T1c</figcaption>
+            </figure>
+            <figure data-seq="t2">
+              <div class="slice-frame">
+                <span class="orient top" data-edge="top"></span>
+                <span class="orient bottom" data-edge="bottom"></span>
+                <span class="orient left" data-edge="left"></span>
+                <span class="orient right" data-edge="right"></span>
+                <canvas></canvas>
+              </div>
+              <figcaption>T2</figcaption>
+            </figure>
+          </div>
+          <label class="slice-slider">Slice
+            <input id="slice-index" type="range" min="0" max="1" value="0">
+            <span id="slice-index-readout">0</span>
+          </label>
+          <label class="slice-slider">Overlay opacity
+            <input id="overlay-opacity" type="range" min="0" max="1" step="0.05" value="0.85">
+          </label>
+          <div id="wl-box">
+            <label>Window / level
+              <select id="wl-seq">
+                <option value="flair">FLAIR</option>
+                <option value="t1">T1</option>
+                <option value="t1c">T1c</option>
+                <option value="t2">T2</option>
+              </select>
+            </label>
+            <label class="slice-slider">Window
+              <input id="wl-width" type="range" min="1" max="1000" value="400">
+            </label>
+            <label class="slice-slider">Level
+              <input id="wl-level" type="range" min="0" max="1000" value="200">
+            </label>
+          </div>
         </div>
-      </header>
-      <div id="slice-grid">
-        <figure data-seq="flair">
-          <div class="slice-frame">
-            <span class="orient top" data-edge="top"></span>
-            <span class="orient bottom" data-edge="bottom"></span>
-            <span class="orient left" data-edge="left"></span>
-            <span class="orient right" data-edge="right"></span>
-            <canvas></canvas>
-          </div>
-          <figcaption>FLAIR</figcaption>
-        </figure>
-        <figure data-seq="t1">
-          <div class="slice-frame">
-            <span class="orient top" data-edge="top"></span>
-            <span class="orient bottom" data-edge="bottom"></span>
-            <span class="orient left" data-edge="left"></span>
-            <span class="orient right" data-edge="right"></span>
-            <canvas></canvas>
-          </div>
-          <figcaption>T1</figcaption>
-        </figure>
-        <figure data-seq="t1c">
-          <div class="slice-frame">
-            <span class="orient top" data-edge="top"></span>
-            <span class="orient bottom" data-edge="bottom"></span>
-            <span class="orient left" data-edge="left"></span>
-            <span class="orient right" data-edge="right"></span>
-            <canvas></canvas>
-          </div>
-          <figcaption>T1c</figcaption>
-        </figure>
-        <figure data-seq="t2">
-          <div class="slice-frame">
-            <span class="orient top" data-edge="top"></span>
-            <span class="orient bottom" data-edge="bottom"></span>
-            <span class="orient left" data-edge="left"></span>
-            <span class="orient right" data-edge="right"></span>
-            <canvas></canvas>
-          </div>
-          <figcaption>T2</figcaption>
-        </figure>
-      </div>
-      <label class="slice-slider">Slice
-        <input id="slice-index" type="range" min="0" max="1" value="0">
-        <span id="slice-index-readout">0</span>
-      </label>
-      <label class="slice-slider">Overlay opacity
-        <input id="overlay-opacity" type="range" min="0" max="1" step="0.05" value="0.85">
-      </label>
-      <div id="wl-box">
-        <label>Window / level
-          <select id="wl-seq">
-            <option value="flair">FLAIR</option>
-            <option value="t1">T1</option>
-            <option value="t1c">T1c</option>
-            <option value="t2">T2</option>
-          </select>
-        </label>
-        <label class="slice-slider">Window
-          <input id="wl-width" type="range" min="1" max="1000" value="400">
-        </label>
-        <label class="slice-slider">Level
-          <input id="wl-level" type="range" min="0" max="1000" value="200">
-        </label>
-      </div>
+      </details>
     </section>
+
     <div id="tooltip" hidden></div>
+    <div id="shortcuts-help" class="modal" hidden role="dialog" aria-label="Keyboard shortcuts">
+      <div class="modal-card">
+        <h2>Keyboard shortcuts</h2>
+        <ul>
+          <li><kbd>I</kbd> Isolate selected structure</li>
+          <li><kbd>G</kbd> Ghost selected structure</li>
+          <li><kbd>A</kbd> Show all</li>
+          <li><kbd>Esc</kbd> Reset selection / exit tour</li>
+        </ul>
+        <button type="button" id="shortcuts-close">Close</button>
+      </div>
+    </div>
   </div>
-  <script type="module" src="/static/viewer.js?v=anatomy1"></script>
+  <script type="module" src="/static/viewer.js?v=explorer1"></script>
 </body>
 </html>

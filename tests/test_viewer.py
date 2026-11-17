@@ -98,9 +98,29 @@ def test_api_serves_scene_manifest_and_slices(tmp_path=None):
     assert client.get("/api/cases/nope/manifest.json").status_code == 404
 
 
+def test_landing_and_viewer_routes_are_separate():
+    client = create_app().test_client()
+    landing = client.get("/")
+    assert landing.status_code == 200
+    assert b"Tumor in context" in landing.data
+    assert b"landing.css" in landing.data
+    assert b"hero.js" in landing.data
+    assert b"viewer.js" not in landing.data
+
+    viewer = client.get("/viewer")
+    assert viewer.status_code == 200
+    assert b'id="viewer"' in viewer.data or b'id="view"' in viewer.data
+    assert b"viewer.js" in viewer.data
+    assert b"Tumor in context" not in viewer.data or b"Open a scan" in viewer.data
+
+    assert client.get("/static/hero.js").status_code == 200
+    assert client.get("/static/landing.css").status_code == 200
+
+
 def test_viewer_page_has_groups_clipping_and_tract_note():
     html = (ROOT / "web" / "static" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "static" / "viewer.js").read_text(encoding="utf-8")
+    explorer = (ROOT / "web" / "static" / "explorer-ui.js").read_text(encoding="utf-8")
     assert "GLTFLoader" in script
     assert "OrbitControls" in script
     assert "CSS2DRenderer" in script
@@ -130,7 +150,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'id="auto-rotate"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
-    assert b"viewer.js?v=anatomy1" in page.data
+    assert b"viewer.js?v=explorer1" in page.data
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
     assert "Cortical grey matter (left)" in script
@@ -150,9 +170,9 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "hemorrhage" not in script.lower()
     assert b'value="hover" selected' in page.data
     css = (ROOT / "web" / "static" / "viewer.css").read_text(encoding="utf-8")
-    assert "color-scheme: light" in css
-    assert "background: #f4f6f8" in css
-    assert "background: #14171a" not in css
+    assert "color-scheme: dark" in css
+    assert "--space: 8px" in css
+    assert "IBM Plex Sans" in css
     assert "setClearColor(0x0b0f17)" in script
     assert "orientNormals" in script
     assert "structureName" in script
@@ -163,6 +183,14 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "renderJobProgress" in script
     assert "showAnatomyWarning" in script
     assert "Anatomy unavailable" not in html or "anatomy-warning" in html
+    assert 'id="start-tour"' in html
+    assert 'id="structure-search"' in html
+    assert 'id="acs-strip"' in html
+    assert "Research prototype, not for diagnosis" in html
+    assert "Scans are processed on this computer" in html
+    assert "createTour" in explorer
+    assert "renderTrustBadges" in explorer
+    assert "/static/vendor/three/three.module.js" in html
 
 
 def _wait_job(client, job_url, timeout=8):
@@ -337,6 +365,111 @@ def test_upload_page_guides_without_modality_jargon():
     assert "Loading" in script and "Meshing" in script
 
 
+def test_list_cases_returns_ids_only(tmp_path=None):
+    import tempfile
+
+    root = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
+    outputs = root / "outputs"
+    cases = root / "cases"
+    ready = outputs / "BraTS20_Training_001"
+    ready.mkdir(parents=True)
+    (ready / "scene.glb").write_bytes(b"glb")
+    (ready / "manifest.json").write_text(json.dumps({"case_id": "BraTS20_Training_001"}), encoding="utf-8")
+    incomplete = outputs / "incomplete"
+    incomplete.mkdir()
+    (incomplete / "manifest.json").write_text("{}", encoding="utf-8")
+    (outputs / "not a case").mkdir()
+    client = create_app(outputs, cases).test_client()
+    response = client.get("/api/cases")
+    assert response.status_code == 200
+    assert response.json == {"cases": ["BraTS20_Training_001"]}
+    payload = json.dumps(response.json)
+    assert "outputs" not in payload
+    assert str(root) not in payload
+    assert "patient" not in payload.lower()
+
+
+def test_location_uncertainty_and_report_endpoints(tmp_path=None):
+    import tempfile
+
+    from web.app import _build_location_report
+
+    root = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
+    outputs = root / "outputs"
+    cases = root / "cases"
+    shape = (8, 7, 6)
+    data = np.zeros(shape, dtype=np.float32)
+    data[2:5, 2:5, 2:5] = 40
+    case_dir = cases / "demo"
+    for suffix in ("t2f", "t1n", "t1c", "t2w"):
+        _nifti(case_dir / f"{suffix}.nii.gz", data)
+    pred = np.zeros(shape, dtype=np.uint8)
+    pred[2:5, 2:5, 2:5] = 1
+    pred[3, 3, 3] = 3
+    second = pred.copy()
+    second[4, 4, 4] = 2
+    _nifti(case_dir / "seg.nii.gz", second)
+    out = outputs / "demo"
+    out.mkdir(parents=True)
+    _nifti(out / "pred_seg.nii.gz", pred)
+    prob = (pred > 0).astype(np.float32) * 0.8
+    _nifti(out / "wt_prob.nii.gz", prob)
+    (out / "scene.glb").write_bytes(b"glb")
+    (out / "manifest.json").write_text(
+        json.dumps(
+            {
+                "case_id": "demo",
+                "case_dir": str(case_dir),
+                "structures": {
+                    "edema": {"volume_cm3": 10.0, "group": "Tumor", "color": [1, 1, 1, 1]},
+                    "necrosis": {"volume_cm3": 4.0, "group": "Tumor", "color": [1, 1, 1, 1]},
+                    "enhancing": {"volume_cm3": 6.0, "group": "Tumor", "color": [1, 1, 1, 1]},
+                },
+                "tract_proximity": {},
+                "tumor_location": {"margin_mm": 10.0, "WT": [], "ET": []},
+                "anatomy_warning": "Anatomy unavailable: atlas missing.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    app = create_app(outputs, cases)
+    client = app.test_client()
+
+    location = client.get("/api/cases/demo/location.json")
+    assert location.status_code == 200
+    assert location.json["case_id"] == "demo"
+    assert location.json["withheld"] is True
+    assert location.json["qc"]["status"] == "unreliable"
+    assert location.json["volumes_ml"]["wt_ml"] == 20.0
+    assert location.json["plausibility"]["floor_ml"] == 20.9
+    assert "case_dir" not in location.json
+
+    written = _build_location_report(app, "demo")
+    assert written["model_note"] == "model-estimated, unverified"
+
+    uncertainty = client.get("/api/cases/demo/uncertainty")
+    assert uncertainty.status_code == 200
+    assert uncertainty.json["has_model"] is True
+    assert uncertainty.json["has_second"] is True
+    assert uncertainty.json["has_prob"] is True
+    assert set(uncertainty.json["dice"]) == {"wt", "tc", "et"}
+    assert 0.0 <= uncertainty.json["dice"]["wt"] <= 1.0
+
+    model = client.get("/api/cases/demo/overlay?source=model&axis=2&index=3")
+    second_png = client.get("/api/cases/demo/overlay?source=second&axis=2&index=3")
+    heat = client.get("/api/cases/demo/overlay?source=prob&axis=2&index=3")
+    assert model.status_code == 200 and model.mimetype == "image/png"
+    assert second_png.status_code == 200 and second_png.mimetype == "image/png"
+    assert heat.status_code == 200 and heat.mimetype == "image/png"
+    assert client.get("/api/cases/demo/overlay?source=nope").status_code == 400
+
+    report = client.get("/api/cases/demo/report.pdf")
+    assert report.status_code == 200
+    assert report.mimetype == "application/pdf"
+    assert report.data[:4] == b"%PDF"
+    assert b"demo" in report.headers.get("Content-Disposition", "").encode()
+
+
 def test_upload_rejects_mismatched_grid(tmp_path=None):
     import tempfile
 
@@ -464,6 +597,8 @@ if __name__ == "__main__":
     test_file_names_are_matched_to_scans()
     test_identify_endpoint_and_plain_missing_message()
     test_upload_page_guides_without_modality_jargon()
+    test_list_cases_returns_ids_only()
+    test_location_uncertainty_and_report_endpoints()
     test_upload_rejects_mismatched_grid()
     test_upload_two_cases_include_tissue_gm_wm()
     print("viewer ok")

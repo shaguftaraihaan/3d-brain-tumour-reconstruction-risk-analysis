@@ -78,8 +78,8 @@ def test_tiers():
 
 
 def test_identifying_folder_names_are_flagged_without_using_them():
-    assert folder_has_identifying_text("CHINNAMMAI.PRATHIPATI   50Y F_MR_Study1")
-    assert folder_has_identifying_text("MADHU U  29Y M_MR_Study1")
+    assert folder_has_identifying_text("DOE.JANE   50Y F_MR_Study1")
+    assert folder_has_identifying_text("ROE J  29Y M_MR_Study1")
     assert not folder_has_identifying_text("26070216161267453698_MR_Study1")
     assert not folder_has_identifying_text("26070409540769354286_MR_Study1 2")
 
