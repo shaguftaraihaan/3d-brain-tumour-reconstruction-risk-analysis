@@ -202,6 +202,9 @@ def test_cli_anatomy_defaults_on():
         return {"case_id": "x"}
 
     module.build_scene = fake
+    # CLI resolves a checkpoint before calling build_scene; this test only
+    # checks anatomy/tracts defaults and must not depend on a local weight file.
+    module.default_checkpoint = lambda: Path("checkpoint.pt")
     module.main(["--case", "BraTS_001"])
     assert seen["anatomy"] is True
     assert seen["tracts"] is False
