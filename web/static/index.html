@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Case explorer</title>
-  <link rel="stylesheet" href="/static/viewer.css?v=explorer4">
+  <link rel="stylesheet" href="/static/viewer.css?v=explorer6">
   <script type="importmap">
     {
       "imports": {
@@ -109,6 +109,14 @@
         <p id="volume-floor-chip" class="warn-chip" hidden>
           Whole-tumor volume is below the 20.9 mL BraTS size floor
         </p>
+      </section>
+
+      <section id="upload-panel" aria-label="Upload scan">
+        <div class="section-head">
+          <h2>Upload scan</h2>
+        </div>
+        <p id="upload-panel-note" class="muted">Add FLAIR, T1, T1c and T2 (or a zip of those files) to build a new case.</p>
+        <button type="button" id="upload-scan-btn" class="ghost">Upload scan</button>
       </section>
 
       <section id="tour-card">
@@ -263,6 +271,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="/static/viewer.js?v=explorer4"></script>
+  <script type="module" src="/static/viewer.js?v=explorer6"></script>
 </body>
 </html>

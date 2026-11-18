@@ -600,6 +600,16 @@ kbd {
   cursor: not-allowed;
 }
 
+#upload-panel .is-disabled,
+#upload-block.is-disabled {
+  opacity: 0.75;
+}
+
+#upload-scan-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .location-region ul {
   margin: 6px 0 0;
   padding-left: 18px;

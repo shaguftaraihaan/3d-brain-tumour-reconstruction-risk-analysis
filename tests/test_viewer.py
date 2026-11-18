@@ -185,7 +185,10 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'id="auto-rotate"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
-    assert b"viewer.js?v=explorer4" in page.data
+    assert b"viewer.js?v=explorer6" in page.data
+    assert b'id="upload-panel"' in page.data
+    assert b"upload-scan-btn" in page.data
+
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
     assert "Cortical grey matter (left)" in script
