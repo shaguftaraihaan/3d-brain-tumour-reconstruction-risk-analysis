@@ -130,12 +130,14 @@ def test_landing_and_viewer_routes_are_separate():
     client = create_app().test_client()
     landing = client.get("/")
     assert landing.status_code == 200
-    assert b"Tumor in context" in landing.data
+    assert b"CerebraVision" in landing.data
     assert b"landing.css" in landing.data
     assert b"hero.js" in landing.data
     assert b"viewer.js" not in landing.data
     assert b"What this is not" in landing.data
     assert b"BraTS" in landing.data
+    assert b"vendor/three/three.module.js" in landing.data
+    assert b"cdn." not in landing.data.lower()
 
     viewer = client.get("/viewer")
     assert viewer.status_code == 200
@@ -176,6 +178,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     html = (ROOT / "web" / "static" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "static" / "viewer.js").read_text(encoding="utf-8")
     explorer = (ROOT / "web" / "static" / "explorer-ui.js").read_text(encoding="utf-8")
+    assert 'id="home-link"' in html
     assert "GLTFLoader" in script
     assert "OrbitControls" in script
     assert "CSS2DRenderer" in script

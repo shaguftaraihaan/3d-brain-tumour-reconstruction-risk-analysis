@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Export a backend-free static demo of the case explorer.
 
-Writes ``dist/static_demo/`` with the viewer assets plus pre-baked GLB, JSON,
-report HTML, and FLAIR / overlay PNGs for a short list of public BraTS cases.
+Writes ``dist/static_demo/`` with:
+  - ``index.html`` — CerebraVision landing (procedural hero, no BraTS mesh data)
+  - ``explorer.html`` — case viewer (``?case=...`` deep links)
+  - vendored three.js, pre-baked GLB/JSON/PNG assets for demo cases
 
 Example:
     python scripts/export_static_demo.py \\
@@ -32,6 +34,9 @@ DEFAULT_CASES = [
     "BraTS20_Training_022",
 ]
 TARGET_BYTES = 100 * 1024 * 1024
+BRATS_FOOTER = (
+    "Research prototype, not for diagnosis. Demo cases from the public BraTS dataset."
+)
 
 
 def _parse_cases(raw: str | None) -> list[str]:
@@ -53,11 +58,46 @@ def _fmt_mb(num: int) -> str:
     return f"{num / (1024 * 1024):.1f} MB"
 
 
-def _rewrite_static_html(src: Path, dest: Path) -> None:
-    text = src.read_text(encoding="utf-8")
+def _rewrite_asset_paths(text: str) -> str:
     text = text.replace('href="/static/', 'href="./')
     text = text.replace('src="/static/', 'src="./')
     text = text.replace('"/static/vendor/three/', '"./vendor/three/')
+    return text
+
+
+def _ensure_footer(text: str) -> str:
+    if "static-demo-footer" in text or 'class="footer"' in text:
+        # Landing already has a BraTS footer; still add the sticky strip for the viewer.
+        if 'class="footer"' in text and "public BraTS dataset" in text:
+            return text
+    footer = (
+        '\n  <footer id="static-demo-footer" class="static-demo-footer">'
+        f"{BRATS_FOOTER}"
+        "</footer>\n"
+    )
+    return text.replace("</body>", footer + "</body>")
+
+
+def _write_landing(dest_root: Path) -> None:
+    src = ROOT / "web" / "static" / "landing.html"
+    text = _rewrite_asset_paths(src.read_text(encoding="utf-8"))
+    text = text.replace('href="/viewer?case=', 'href="./explorer.html?case=')
+    text = text.replace('href="/viewer"', 'href="./explorer.html"')
+    text = text.replace("href='/viewer'", "href='./explorer.html'")
+    if 'meta name="brats-static-demo"' not in text:
+        text = text.replace(
+            "<head>",
+            "<head>\n"
+            '  <meta name="brats-static-demo" content="1">\n'
+            "  <script>window.__STATIC_DEMO__ = true;</script>",
+            1,
+        )
+    (dest_root / "index.html").write_text(text, encoding="utf-8")
+
+
+def _write_explorer(dest_root: Path) -> None:
+    src = ROOT / "web" / "static" / "index.html"
+    text = _rewrite_asset_paths(src.read_text(encoding="utf-8"))
     text = text.replace(
         "<head>",
         "<head>\n"
@@ -65,15 +105,11 @@ def _rewrite_static_html(src: Path, dest: Path) -> None:
         "  <script>window.__STATIC_DEMO__ = true;</script>",
         1,
     )
-    footer = (
-        '\n  <footer id="static-demo-footer" class="static-demo-footer">'
-        "Research prototype, not for diagnosis. "
-        "Demo cases from the public BraTS dataset."
-        "</footer>\n"
-    )
-    if "static-demo-footer" not in text:
-        text = text.replace("</body>", footer + "</body>")
-    dest.write_text(text, encoding="utf-8")
+    text = _ensure_footer(text)
+    # Home link already points to /; rewrite for static.
+    text = text.replace('href="/" id="home-link"', 'href="./index.html" id="home-link"')
+    text = text.replace('id="home-link" class="home-link" href="/"', 'id="home-link" class="home-link" href="./index.html"')
+    (dest_root / "explorer.html").write_text(text, encoding="utf-8")
 
 
 def _copy_vercel_config(dest_root: Path) -> None:
@@ -82,15 +118,18 @@ def _copy_vercel_config(dest_root: Path) -> None:
     if not src.is_file():
         return
     payload = json.loads(src.read_text(encoding="utf-8"))
-    # When the folder itself is the Vercel root, output is ``.`` not ``dist/static_demo``.
     payload["outputDirectory"] = "."
+    # Deep links into the viewer should still resolve if someone bookmarks /explorer.
+    rewrites = list(payload.get("rewrites") or [])
+    if not any(r.get("source") == "/explorer" for r in rewrites):
+        rewrites.append({"source": "/explorer", "destination": "/explorer.html"})
+    payload["rewrites"] = rewrites
     (dest_root / "vercel.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _copy_viewer_assets(dest_root: Path) -> None:
     static = ROOT / "web" / "static"
-    # Core viewer files (relative paths after HTML rewrite).
-    for name in ("viewer.js", "viewer.css", "explorer-ui.js", "hero.js", "landing.css", "landing.html", "favicon.png"):
+    for name in ("viewer.js", "viewer.css", "explorer-ui.js", "hero.js", "landing.css", "favicon.png"):
         src = static / name
         if src.is_file():
             shutil.copy2(src, dest_root / name)
@@ -100,15 +139,19 @@ def _copy_viewer_assets(dest_root: Path) -> None:
     vendor = static / "vendor"
     if vendor.is_dir():
         shutil.copytree(vendor, dest_root / "vendor", dirs_exist_ok=True)
-    _rewrite_static_html(static / "index.html", dest_root / "index.html")
+    _write_landing(dest_root)
+    _write_explorer(dest_root)
     _copy_vercel_config(dest_root)
-    # Optional landing page with relative links into the viewer.
-    landing = dest_root / "landing.html"
-    if landing.is_file():
-        text = landing.read_text(encoding="utf-8")
-        text = text.replace('href="/static/', 'href="./').replace('src="/static/', 'src="./')
-        text = text.replace('href="/viewer', 'href="./index.html')
-        landing.write_text(text, encoding="utf-8")
+    css = dest_root / "viewer.css"
+    if css.is_file():
+        extra = (
+            "\n.static-demo-footer{position:fixed;left:0;right:0;bottom:0;z-index:40;"
+            "padding:0.35rem 0.75rem;font:12px/1.4 ui-sans-serif,system-ui,sans-serif;"
+            "color:#c9d4e3;background:rgba(8,12,20,0.92);border-top:1px solid #243044;"
+            "pointer-events:none;}\n"
+            "body{padding-bottom:1.6rem;}\n"
+        )
+        css.write_text(css.read_text(encoding="utf-8") + extra, encoding="utf-8")
 
 
 def _save_png(path: Path, png_bytes: bytes, *, colors: int | None) -> None:
@@ -118,7 +161,6 @@ def _save_png(path: Path, png_bytes: bytes, *, colors: int | None) -> None:
         return
     image = Image.open(io_bytes(png_bytes))
     if image.mode == "RGBA":
-        # Keep alpha; quantize RGB only via adaptive palette when opaque enough.
         alpha = image.split()[-1]
         quantized = image.convert("RGB").quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
         out = quantized.convert("RGBA")
@@ -147,8 +189,8 @@ def _indices(length: int, stride: int) -> list[int]:
 
 
 def _export_case(app, case_id: str, dest: Path, *, stride: int, colors: int | None) -> dict:
-    from recon.slices import ORIENT_LETTERS, brain_window, render_overlay_png, render_slice_png, slice_extent_mm
     from nibabel.affines import voxel_sizes
+    from recon.slices import ORIENT_LETTERS, brain_window, render_overlay_png, render_slice_png, slice_extent_mm
     from web import app as app_mod
 
     out_dir = Path(app.config["OUTPUTS"]) / case_id
@@ -173,7 +215,6 @@ def _export_case(app, case_id: str, dest: Path, *, stride: int, colors: int | No
     if uncertainty.status_code != 200:
         raise RuntimeError(f"uncertainty failed for {case_id}: {uncertainty.status_code}")
     unc = uncertainty.get_json()
-    # Static demo never ships probability maps.
     unc["has_prob"] = False
     unc["reasons"] = dict(unc.get("reasons") or {})
     unc["reasons"]["prob"] = "Probability map needs the live model server."
@@ -224,7 +265,6 @@ def _export_case(app, case_id: str, dest: Path, *, stride: int, colors: int | No
     }
     (case_dest / "volume.json").write_text(json.dumps(volume_meta, indent=2), encoding="utf-8")
 
-    # Volumes summary + Dice already live in location / uncertainty; also write a tiny summary.
     location_payload = json.loads((case_dest / "location.json").read_text(encoding="utf-8"))
     summary = {
         "case_id": case_id,
@@ -247,7 +287,6 @@ def _export_case(app, case_id: str, dest: Path, *, stride: int, colors: int | No
                 _save_png(slices_dest / f"overlay_second_a{axis}_i{index}.png", expert, colors=None)
             count += 1
 
-    # Free large arrays between cases.
     with app_mod._VOLUME_CACHE_LOCK:
         app.config["VOLUMES"].clear()
     return {"case_id": case_id, "slices_written": count, "window": window, "stride": stride}
@@ -268,19 +307,8 @@ def export_static_demo(
     dest.mkdir(parents=True)
 
     _copy_viewer_assets(dest)
-    css = dest / "viewer.css"
-    if css.is_file():
-        extra = (
-            "\n.static-demo-footer{position:fixed;left:0;right:0;bottom:0;z-index:40;"
-            "padding:0.35rem 0.75rem;font:12px/1.4 ui-sans-serif,system-ui,sans-serif;"
-            "color:#c9d4e3;background:rgba(8,12,20,0.92);border-top:1px solid #243044;"
-            "pointer-events:none;}\n"
-            "body{padding-bottom:1.6rem;}\n"
-        )
-        css.write_text(css.read_text(encoding="utf-8") + extra, encoding="utf-8")
 
     app = create_app()
-    # Exporter needs full mode helpers (dice / second mask) even when BRATS_DEMO is set.
     exported = []
     cuts: list[str] = []
     active_cases = list(cases)
@@ -288,7 +316,6 @@ def export_static_demo(
     active_colors = colors
 
     while True:
-        # Fresh case tree each attempt.
         cases_root = dest / "cases"
         if cases_root.exists():
             shutil.rmtree(cases_root)
@@ -303,13 +330,10 @@ def export_static_demo(
             json.dumps({"cases": active_cases, "static": True, "stride": active_stride}, indent=2),
             encoding="utf-8",
         )
-        # Tiny vercel-friendly 404 → index for SPA-ish deep links is unnecessary;
-        # query-string case routing is enough.
         total = _dir_size(dest)
         print(f"dist size {_fmt_mb(total)} ({total} bytes)", flush=True)
         if total <= target_bytes:
             break
-        # Size budget: escalate cuts.
         if active_stride < 2:
             active_stride = 2
             cuts.append("raised stride to 2")
@@ -340,6 +364,8 @@ def export_static_demo(
         "bytes": _dir_size(dest),
         "cuts": cuts,
         "exported": exported,
+        "entry": "index.html",
+        "viewer": "explorer.html",
     }
     (dest / "export_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
@@ -370,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         colors=colors,
         target_bytes=int(args.target_mb * 1024 * 1024),
     )
-    print(json.dumps({k: meta[k] for k in ("cases", "stride", "colors", "bytes", "cuts")}, indent=2))
+    print(json.dumps({k: meta[k] for k in ("cases", "stride", "colors", "bytes", "cuts", "entry", "viewer")}, indent=2))
     return 0
 
 

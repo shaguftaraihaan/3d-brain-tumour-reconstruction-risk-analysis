@@ -14,14 +14,17 @@ Research prototype, not for diagnosis. Demo cases are derived from the **public 
      --stride 2
    ```
 
-   This writes `dist/static_demo/` (viewer assets + `scene.glb` + pre-rendered FLAIR / overlay PNGs + JSON / report HTML). Target size is under 100 MB; the exporter raises stride / reduces PNG colors if needed.
+   This writes `dist/static_demo/` with the CerebraVision **landing page** as `index.html`, the case explorer as `explorer.html`, plus `scene.glb` and pre-rendered FLAIR / overlay PNGs. Target size is under 100 MB; the exporter raises stride / reduces PNG colors if needed.
 
 2. Preview locally without Flask:
 
    ```bash
    python -m http.server 4173 --directory dist/static_demo
-   # open http://127.0.0.1:4173/index.html?case=BraTS20_Training_002
+   # landing:  http://127.0.0.1:4173/
+   # viewer:   http://127.0.0.1:4173/explorer.html?case=BraTS20_Training_002
    ```
+
+   Production URL: https://cerebravision-demo.vercel.app
 
 3. Deploy with the Vercel CLI. Prefer deploying the export folder itself (the exporter copies a `vercel.json` with `"outputDirectory": "."` into `dist/static_demo`):
 

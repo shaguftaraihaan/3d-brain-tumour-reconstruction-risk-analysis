@@ -4,7 +4,9 @@
   "buildCommand": "",
   "outputDirectory": "dist/static_demo",
   "rewrites": [
-    { "source": "/", "destination": "/index.html" }
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/explorer", "destination": "/explorer.html" },
+    { "source": "/viewer", "destination": "/explorer.html" }
   ],
   "headers": [
     {

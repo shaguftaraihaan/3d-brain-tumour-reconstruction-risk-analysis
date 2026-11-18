@@ -16,6 +16,15 @@ DIST = ROOT / "dist" / "static_demo"
 def test_static_demo_export_under_100mb_and_has_cases():
     total = sum(p.stat().st_size for p in DIST.rglob("*") if p.is_file())
     assert total <= 100 * 1024 * 1024, f"dist is {total / (1024 * 1024):.1f} MB"
+    index = (DIST / "index.html").read_text(encoding="utf-8")
+    explorer = (DIST / "explorer.html").read_text(encoding="utf-8")
+    assert "CerebraVision" in index
+    assert "hero.js" in index and "viewer.js" not in index
+    assert "./vendor/three/three.module.js" in index
+    assert "cdn." not in index.lower()
+    assert "explorer.html?case=BraTS20_Training_002" in index
+    assert "__STATIC_DEMO__" in explorer
+    assert 'id="home-link"' in explorer and 'href="./index.html"' in explorer
     cases = json.loads((DIST / "cases.json").read_text(encoding="utf-8"))["cases"]
     assert len(cases) >= 1
     for case_id in cases:
@@ -56,7 +65,7 @@ def test_static_demo_real_chrome_per_case():
                 else None,
             )
             page.on("pageerror", lambda err: console_errors.append(f"pageerror:{err}"))
-            page.goto(f"{base}/index.html?case={case_id}", wait_until="domcontentloaded", timeout=180000)
+            page.goto(f"{base}/explorer.html?case={case_id}", wait_until="domcontentloaded", timeout=180000)
             page.wait_for_function("window.__viewerReady === true", timeout=180000)
             page.wait_for_timeout(2000)
             page.wait_for_function("window.__acsPainted === true", timeout=30000)
