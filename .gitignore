@@ -12,3 +12,10 @@ docs/landing_drop/
 outputs/real/
 data/private/
 data/
+
+# Static demo export (regenerate with scripts/export_static_demo.py; do not commit unless intentional)
+dist/
+dist/static_demo/
+
+# Large local slice dumps from ad-hoc runs (curated overlays/scene assets stay tracked)
+outputs/**/slices/ras1_*
