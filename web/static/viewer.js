@@ -26,7 +26,7 @@ import {
   wireAcsStrip,
   wireReportLink,
   worldToVoxel,
-} from "./explorer-ui.js?v=explorer7";
+} from "./explorer-ui.js?v=explorer8";
 
 const AXIS_NAME = ["Sagittal", "Coronal", "Axial"];
 const TUMOR_ORDER = ["enhancing", "necrosis", "edema"];
@@ -88,6 +88,11 @@ const REQUIRED_SCANS = SCAN_ORDER.filter((role) => SCAN_ROLES[role].required);
 const upload = { files: [], folder: null, caseId: null, skipped: 0, dicom: false };
 /** Populated in static mode from ``volume.json`` so slice URLs can snap to exported indices. */
 let staticVolumeMeta = null;
+/** When false, folder/file pickers and drop handling are hard-gated (static / demo). */
+let uploadEnabled = true;
+
+const STATIC_UPLOAD_MESSAGE =
+  "Upload and 3D model building need the trained model. This public demo only opens the 3 BraTS example cases. Run the app locally to analyse your own scan.";
 
 setupUpload();
 loadCasePicker();
@@ -113,27 +118,62 @@ function setupUpload() {
   const zone = document.querySelector("#drop-zone");
   const folderInput = document.querySelector("#folder-input");
   const filesInput = document.querySelector("#files-input");
-  form.addEventListener("submit", onUpload);
-  document.querySelector("#pick-folder").addEventListener("click", () => folderInput.click());
-  document.querySelector("#pick-files").addEventListener("click", () => filesInput.click());
+  form.addEventListener("submit", (event) => {
+    if (!uploadEnabled) {
+      event.preventDefault();
+      return;
+    }
+    onUpload(event);
+  });
+  document.querySelector("#pick-folder").addEventListener("click", (event) => {
+    if (!uploadEnabled) {
+      event.preventDefault();
+      return;
+    }
+    folderInput.click();
+  });
+  document.querySelector("#pick-files").addEventListener("click", (event) => {
+    if (!uploadEnabled) {
+      event.preventDefault();
+      return;
+    }
+    filesInput.click();
+  });
   document.querySelector("#scan-clear").addEventListener("click", () => {
+    if (!uploadEnabled) return;
     Object.assign(upload, { files: [], folder: null, caseId: null, skipped: 0, dicom: false });
     renderScanReview();
   });
   folderInput.addEventListener("change", () => {
+    if (!uploadEnabled) {
+      folderInput.value = "";
+      return;
+    }
     const files = Array.from(folderInput.files);
     const first = files[0]?.webkitRelativePath || "";
     addScanFiles(files, first.includes("/") ? first.split("/")[0] : null);
     folderInput.value = "";
   });
   filesInput.addEventListener("change", () => {
+    if (!uploadEnabled) {
+      filesInput.value = "";
+      return;
+    }
     addScanFiles(Array.from(filesInput.files), null);
     filesInput.value = "";
   });
   zone.addEventListener("click", (event) => {
+    if (!uploadEnabled) {
+      event.preventDefault();
+      return;
+    }
     if (!event.target.closest("button")) folderInput.click();
   });
   zone.addEventListener("keydown", (event) => {
+    if (!uploadEnabled) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       folderInput.click();
@@ -142,16 +182,30 @@ function setupUpload() {
   for (const type of ["dragenter", "dragover"]) {
     zone.addEventListener(type, (event) => {
       event.preventDefault();
+      if (!uploadEnabled) return;
       zone.classList.add("dragging");
     });
   }
   zone.addEventListener("dragleave", () => zone.classList.remove("dragging"));
   zone.addEventListener("drop", async (event) => {
     event.preventDefault();
+    event.stopPropagation();
     zone.classList.remove("dragging");
+    if (!uploadEnabled) return;
     const { files, folder } = await filesFromDrop(event.dataTransfer);
     addScanFiles(files, folder);
   });
+  // Keep the browser from navigating to a dropped file anywhere on the upload screen.
+  for (const type of ["dragover", "drop"]) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (uploadEnabled) return;
+        event.preventDefault();
+      },
+      { capture: true },
+    );
+  }
 }
 
 async function filesFromDrop(dataTransfer) {
@@ -403,12 +457,19 @@ function formatSeconds(value) {
   return minutes ? `${minutes}:${String(rest).padStart(2, "0")}` : `${seconds.toFixed(1)}s`;
 }
 
-function applyDisabledUpload(message) {
+function applyDisabledUpload(message, { hideAdvanced = false, promoteCases = false } = {}) {
+  uploadEnabled = false;
   const note = document.querySelector("#demo-note");
   const block = document.querySelector("#upload-block");
   const submit = document.querySelector("#upload-submit");
   const panelBtn = document.querySelector("#upload-scan-btn");
   const panelNote = document.querySelector("#upload-panel-note");
+  const zone = document.querySelector("#drop-zone");
+  const advanced = document.querySelector("#advanced");
+  const picker = document.querySelector("#case-picker");
+  const heading = document.querySelector("#case-picker-heading");
+  const title = document.querySelector("#upload-screen-title");
+  const lead = document.querySelector("#upload-screen-lead");
   if (note) {
     note.hidden = false;
     note.textContent = message;
@@ -416,13 +477,37 @@ function applyDisabledUpload(message) {
   if (block) {
     block.hidden = false;
     block.classList.add("is-disabled");
+    block.setAttribute("aria-disabled", "true");
     block.querySelectorAll("input,button").forEach((el) => {
       el.disabled = true;
+      el.setAttribute("aria-disabled", "true");
     });
   }
-  if (submit) submit.disabled = true;
+  if (zone) {
+    zone.classList.add("is-disabled");
+    zone.setAttribute("aria-disabled", "true");
+    zone.tabIndex = -1;
+    zone.removeAttribute("role");
+  }
+  if (submit) {
+    submit.disabled = true;
+    submit.setAttribute("aria-disabled", "true");
+  }
+  if (hideAdvanced && advanced) {
+    advanced.hidden = true;
+    advanced.open = false;
+  }
+  if (promoteCases) {
+    if (picker) picker.classList.add("is-primary");
+    if (heading) heading.textContent = "Open a demo case";
+    if (title) title.textContent = "Open a demo case";
+    if (lead) {
+      lead.textContent = "This public demo ships three finished BraTS reconstructions. Pick one below to open the 3D viewer.";
+    }
+  }
   if (panelBtn) {
     panelBtn.disabled = true;
+    panelBtn.setAttribute("aria-disabled", "true");
     panelBtn.title = message;
     panelBtn.textContent = "Upload scan (unavailable in this demo)";
   }
@@ -512,7 +597,7 @@ async function loadCapabilities() {
   const home = document.querySelector("#home-link");
   if (home) home.href = isStaticDemo() ? "./index.html" : "/";
   if (isStaticDemo()) {
-    applyDisabledUpload("Upload scan needs the trained model. Run locally to analyse your own scan.");
+    applyDisabledUpload(STATIC_UPLOAD_MESSAGE, { hideAdvanced: true, promoteCases: true });
     disableStaticOnlyControls();
     populateStaticCaseSwitcher();
     return;
@@ -522,9 +607,10 @@ async function loadCapabilities() {
     const message = caps.message || "Upload and inference are not available in this demo.";
     // Always keep Upload scan visible. Demo mode: disabled with explanation.
     if (!caps.upload) {
-      applyDisabledUpload(message);
+      applyDisabledUpload(message, { hideAdvanced: false, promoteCases: false });
       return;
     }
+    uploadEnabled = true;
     if (panelBtn) {
       panelBtn.disabled = false;
       panelBtn.title = "";
@@ -711,7 +797,7 @@ async function startViewer(id) {
     gltf = await new GLTFLoader().loadAsync(
       isStaticDemo()
         ? `${caseAssetBase(id)}/scene.glb`
-        : `${caseAssetBase(id)}/scene.glb?v=explorer7`,
+        : `${caseAssetBase(id)}/scene.glb?v=explorer8`,
     );
   } catch (error) {
     showPanelState("#view-state", "error", `Could not load 3D scene: ${error.message || error}`, () => {

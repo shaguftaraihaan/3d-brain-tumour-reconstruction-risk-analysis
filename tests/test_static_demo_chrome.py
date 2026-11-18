@@ -101,4 +101,36 @@ def test_static_demo_real_chrome_per_case():
             assert not failed, failed
             assert not console_errors, console_errors
             page.close()
+
+        # Upload controls are hard-disabled on the picker screen; drops must not navigate away.
+        page = browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=2)
+        page.goto(f"{base}/explorer.html", wait_until="domcontentloaded", timeout=120000)
+        page.wait_for_selector("#demo-note:not([hidden])", timeout=30000)
+        page.wait_for_selector("#case-list button", timeout=30000)
+        assert page.locator("#case-picker").evaluate("el => el.classList.contains('is-primary')")
+        assert page.locator("#pick-folder").is_disabled()
+        assert page.locator("#pick-files").is_disabled()
+        assert page.locator("#upload-submit").is_disabled()
+        assert page.locator("#drop-zone").get_attribute("aria-disabled") == "true"
+        assert page.locator("#advanced").is_hidden()
+        note = page.locator("#demo-note").inner_text()
+        assert "trained model" in note and "3 BraTS example cases" in note
+        before = page.url
+        page.evaluate(
+            """() => {
+              const event = new Event('drop', { bubbles: true, cancelable: true });
+              Object.defineProperty(event, 'dataTransfer', {
+                value: { files: [], items: [], types: ['Files'] },
+              });
+              window.dispatchEvent(new Event('dragover', { bubbles: true, cancelable: true }));
+              window.dispatchEvent(event);
+              document.body.dispatchEvent(event);
+            }"""
+        )
+        page.wait_for_timeout(400)
+        assert page.url == before
+        page.locator("#case-list button").first.click()
+        page.wait_for_url("**/explorer.html?case=*", timeout=30000)
+        page.wait_for_function("window.__viewerReady === true", timeout=180000)
+        page.close()
         browser.close()

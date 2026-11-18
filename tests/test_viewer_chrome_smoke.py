@@ -25,8 +25,8 @@ def test_acs_helpers_and_cache_bust_are_wired():
     assert "attribute vec3 color" not in viewer
     assert "vertexColors: false" in viewer
     assert "glassFallbackMaterial" in viewer
-    assert "viewer.js?v=explorer7" in html
-    assert "explorer-ui.js?v=explorer7" in viewer
+    assert "viewer.js?v=explorer8" in html
+    assert "explorer-ui.js?v=explorer8" in viewer
     assert 'id="upload-panel"' in html
     assert "no-cache, must-revalidate" in app
     assert "_VOLUME_CACHE_LOCK" in app

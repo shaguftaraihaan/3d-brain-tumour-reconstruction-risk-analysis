@@ -44,7 +44,7 @@ _VOLUME_CACHE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
 # Bump when viewer static assets change so deploys never serve stale JS/CSS.
-_STATIC_ASSET_VERSION = "explorer7"
+_STATIC_ASSET_VERSION = "explorer8"
 
 
 def _demo_mode() -> bool:

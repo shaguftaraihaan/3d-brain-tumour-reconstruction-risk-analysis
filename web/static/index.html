@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Case explorer</title>
   <link rel="icon" type="image/png" href="/static/favicon.png">
-  <link rel="stylesheet" href="/static/viewer.css?v=explorer7">
+  <link rel="stylesheet" href="/static/viewer.css?v=explorer8">
   <script type="importmap">
     {
       "imports": {
@@ -19,16 +19,17 @@
   <section id="upload-screen">
     <form id="upload-form">
       <p class="brand">Case explorer</p>
-      <h1>Open a scan</h1>
+      <h1 id="upload-screen-title">Open a scan</h1>
       <p class="privacy-note">Scans are processed on this computer. Do not upload real patient data unless approved.</p>
-      <p class="lead">Add the folder with the MRI scans. You don't need to know which file is which: we read the file names and show what we found.</p>
-      <p id="demo-note" class="privacy-note" hidden role="status"></p>
+      <p class="lead" id="upload-screen-lead">Add the folder with the MRI scans. You don't need to know which file is which: we read the file names and show what we found.</p>
 
       <section id="case-picker" aria-label="Existing cases">
-        <h2>Existing cases</h2>
+        <h2 id="case-picker-heading">Existing cases</h2>
         <p class="muted" id="case-picker-status">Looking for finished cases…</p>
         <ul id="case-list"></ul>
       </section>
+
+      <p id="demo-note" class="privacy-note" hidden role="status"></p>
 
       <div id="upload-block">
       <div id="drop-zone" tabindex="0" role="button" aria-label="Add the scan folder">
@@ -282,6 +283,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="/static/viewer.js?v=explorer7"></script>
+  <script type="module" src="/static/viewer.js?v=explorer8"></script>
 </body>
 </html>

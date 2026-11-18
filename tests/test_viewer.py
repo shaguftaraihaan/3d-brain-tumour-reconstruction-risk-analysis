@@ -179,6 +179,8 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     script = (ROOT / "web" / "static" / "viewer.js").read_text(encoding="utf-8")
     explorer = (ROOT / "web" / "static" / "explorer-ui.js").read_text(encoding="utf-8")
     assert 'id="home-link"' in html
+    assert "STATIC_UPLOAD_MESSAGE" in script
+    assert "uploadEnabled" in script
     assert "GLTFLoader" in script
     assert "OrbitControls" in script
     assert "CSS2DRenderer" in script
@@ -216,7 +218,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'id="auto-rotate"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
-    assert b"viewer.js?v=explorer7" in page.data
+    assert b"viewer.js?v=explorer8" in page.data
     assert b'id="upload-panel"' in page.data
     assert b"upload-scan-btn" in page.data
 

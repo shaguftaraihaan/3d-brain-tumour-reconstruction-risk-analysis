@@ -177,6 +177,18 @@ kbd {
   border-radius: var(--radius);
 }
 
+#case-picker.is-primary {
+  order: -1;
+  padding: calc(var(--space) * 1.75);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--bg-elevated));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+}
+
+#case-picker.is-primary #case-picker-heading {
+  font-size: 1.15rem;
+}
+
 #case-list {
   list-style: none;
   margin: 0;
@@ -187,9 +199,32 @@ kbd {
   overflow: auto;
 }
 
+#case-picker.is-primary #case-list {
+  max-height: none;
+  gap: calc(var(--space) * 0.75);
+}
+
 #case-list button {
   width: 100%;
   text-align: left;
+}
+
+#case-picker.is-primary #case-list button {
+  padding: 0.9rem 1.1rem;
+  font-size: 1rem;
+  font-weight: 650;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--bg-panel) 88%, #1a3a6e);
+}
+
+#case-picker.is-primary #case-list button:hover,
+#case-picker.is-primary #case-list button:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+#demo-note {
+  margin: 0;
 }
 
 #drop-zone {
@@ -208,6 +243,13 @@ kbd {
 #drop-zone:focus-visible {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+#drop-zone.is-disabled,
+#upload-block.is-disabled #drop-zone {
+  cursor: not-allowed;
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .drop-buttons {
@@ -639,7 +681,14 @@ kbd {
 
 #upload-panel .is-disabled,
 #upload-block.is-disabled {
-  opacity: 0.75;
+  opacity: 0.72;
+}
+
+#upload-block.is-disabled #pick-folder,
+#upload-block.is-disabled #pick-files,
+#upload-block.is-disabled #upload-submit {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 #upload-scan-btn:disabled {
