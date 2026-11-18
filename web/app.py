@@ -14,13 +14,14 @@ import io
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,32 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     app.config["CASES"] = Path(cases_dir) if cases_dir else ROOT / "data" / "cases"
     app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
     app.config["VOLUMES"] = {}
+    app.config["DEMO_PASSWORD"] = os.environ.get("DEMO_PASSWORD") or ""
+
+    @app.before_request
+    def _optional_basic_auth():
+        password = app.config.get("DEMO_PASSWORD") or ""
+        if not password:
+            return None
+        # Health checks and public static assets must not require credentials.
+        if request.path == "/healthz":
+            return None
+        if request.path.startswith("/static/"):
+            return None
+        auth = request.authorization
+        user_ok = bool(auth and auth.username == "demo")
+        pass_ok = bool(auth and secrets.compare_digest(auth.password or "", password))
+        if user_ok and pass_ok:
+            return None
+        return Response(
+            "Authentication required",
+            401,
+            {"WWW-Authenticate": 'Basic realm="Tumor in context demo"'},
+        )
+
+    @app.get("/healthz")
+    def healthz():
+        return jsonify({"ok": True}), 200
 
     @app.get("/")
     def landing_page():
@@ -178,12 +205,19 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
         windows = {}
         for name in SEQUENCE_ORDER:
             try:
-                volume, _ = _cached_volume(app, case_id, name)
+                # Only the requested modality stays cached; others are loaded briefly
+                # for window stats so demo RSS fits Render's 512 MB free tier.
+                if resolve_sequence(name) == suffix:
+                    volume = data
+                else:
+                    volume, _ = _read_volume(app, case_id, name)
             except (FileNotFoundError, ValueError):
                 continue
             mask = brain if brain is not None and brain.shape == volume.shape else None
             wlo, whi = _window_for(volume, mask)
             windows[name] = {"lo": wlo, "hi": whi, "suffix": resolve_sequence(name)}
+            if resolve_sequence(name) != suffix:
+                del volume
         key = modality if modality in windows else "flair"
         chosen = windows.get(key, next(iter(windows.values()), {"lo": 0.0, "hi": 1.0}))
         from nibabel.affines import voxel_sizes
@@ -466,15 +500,17 @@ _DEMO_UNAVAILABLE = (
 )
 
 
+# Path only — do not import recon.infer here (that pulls torch/MONAI).
+_ABHINAV_CHECKPOINT = ROOT / "checkpoints" / "brats_scale_full" / "best_model.pt"
+
+
 def _checkpoint_candidates() -> list[Path]:
     """Paths that may hold a SegResNet weight file for upload reconstruction."""
-    from recon.infer import ABHINAV_CHECKPOINT
-
     candidates: list[Path] = []
     env = os.environ.get("BRATS_CHECKPOINT")
     if env:
         candidates.append(Path(env))
-    candidates.append(Path(ABHINAV_CHECKPOINT))
+    candidates.append(_ABHINAV_CHECKPOINT)
     candidates.append(ROOT / "models" / "best_model.pt")
     candidates.append(ROOT / "checkpoints" / "brats_scale_full" / "best_model.pt")
     # Deduplicate while preserving order.
@@ -515,15 +551,16 @@ def _upload_model() -> tuple[str, Path]:
     Raises ``FileNotFoundError`` when no weight file exists (callers should check
     ``_capabilities`` first so the demo returns 503 instead of a 500).
     """
-    from recon.infer import ABHINAV_CHECKPOINT, ABHINAV_V3, OURS
+    # Import constants only when upload/inference is about to run.
+    from recon.infer import ABHINAV_V3, OURS
 
     wanted = os.environ.get("BRATS_UPLOAD_MODEL", ABHINAV_V3)
-    if wanted == ABHINAV_V3 and Path(ABHINAV_CHECKPOINT).is_file():
-        return ABHINAV_V3, Path(ABHINAV_CHECKPOINT)
+    if wanted == ABHINAV_V3 and _ABHINAV_CHECKPOINT.is_file():
+        return ABHINAV_V3, _ABHINAV_CHECKPOINT
     found = _find_checkpoint()
     if found is None:
         raise FileNotFoundError(_DEMO_UNAVAILABLE)
-    if found == Path(ABHINAV_CHECKPOINT):
+    if found == _ABHINAV_CHECKPOINT:
         return ABHINAV_V3, found
     return OURS, found
 
@@ -580,13 +617,42 @@ def _find_modality(case_dir: Path, suffix: str) -> Path:
 
 
 def _foreground_bbox(volume) -> tuple[list[int], list[int]]:
-    """Inclusive voxel box of values above the background minimum."""
+    """Inclusive voxel box of values above the background minimum.
+
+    Collapses one axis at a time instead of ``np.argwhere`` so a full-brain
+    mask does not allocate an (N, 3) index array (hundreds of MB on BraTS).
+    """
     data = np.asarray(volume)
-    mask = np.isfinite(data) & (data > np.nanmin(data))
+    if data.size == 0:
+        return [0, 0, 0], [0, 0, 0]
+    finite = np.isfinite(data)
+    if not np.any(finite):
+        return [0, 0, 0], [int(n) - 1 for n in data.shape]
+    mask = finite & (data > np.nanmin(data))
     if not np.any(mask):
         return [0, 0, 0], [int(n) - 1 for n in data.shape]
-    coords = np.argwhere(mask)
-    return coords.min(axis=0).astype(int).tolist(), coords.max(axis=0).astype(int).tolist()
+    lo: list[int] = []
+    hi: list[int] = []
+    for axis in range(mask.ndim):
+        other = tuple(i for i in range(mask.ndim) if i != axis)
+        collapsed = np.any(mask, axis=other)
+        idx = np.flatnonzero(collapsed)
+        lo.append(int(idx[0]))
+        hi.append(int(idx[-1]))
+    return lo, hi
+
+
+def _read_volume(app: Flask, case_id: str, modality: str):
+    """Load one RAS float32 volume without touching the in-memory cache."""
+    from recon.slices import resolve_sequence
+
+    suffix = resolve_sequence(modality)
+    path = _find_modality(_case_dir(app, case_id), suffix)
+    image = nib.as_closest_canonical(nib.load(str(path)))
+    data = np.squeeze(np.asanyarray(image.dataobj)).astype(np.float32, copy=False)
+    if data.ndim != 3:
+        raise ValueError(f"{path.name} is not a 3D volume")
+    return data, np.asarray(image.affine, dtype=np.float64)
 
 
 def _cached_volume(app: Flask, case_id: str, modality: str):
@@ -596,12 +662,17 @@ def _cached_volume(app: Flask, case_id: str, modality: str):
     key = (case_id, suffix)
     cache = app.config["VOLUMES"]
     if key not in cache:
-        path = _find_modality(_case_dir(app, case_id), suffix)
-        image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))
-        if data.ndim != 3:
-            raise ValueError(f"{path.name} is not a 3D volume")
-        cache[key] = (data, np.asarray(image.affine, dtype=np.float64))
+        # Keep at most one MRI volume per case so free-tier RAM stays under 512 MB.
+        for existing in list(cache):
+            if (
+                isinstance(existing, tuple)
+                and len(existing) == 2
+                and existing[0] == case_id
+                and existing[1] in {"t2f", "t1n", "t1c", "t2w"}
+                and existing[1] != suffix
+            ):
+                cache.pop(existing, None)
+        cache[key] = _read_volume(app, case_id, modality)
     return cache[key]
 
 
@@ -611,7 +682,7 @@ def _cached_pred(app: Flask, case_id: str):
     if key not in cache:
         path = _output_file(app, case_id, "pred_seg.nii.gz")
         image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
         if data.ndim != 3:
             raise ValueError("pred_seg is not a 3D volume")
         cache[key] = data
@@ -628,7 +699,7 @@ def _brain_mask(app: Flask, case_id: str, volume) -> np.ndarray:
         if not path.is_file():
             continue
         image = nib.as_closest_canonical(nib.load(str(path)))
-        labels = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        labels = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
         mask = labels != 0
         if np.any(mask):
             cache[key] = mask
@@ -991,6 +1062,8 @@ def _warm_imports() -> None:
 
 
 if __name__ == "__main__":
-    threading.Thread(target=_warm_imports, daemon=True).start()
-    port = int(os.environ.get("PORT", "8000"))
+    # Demo / Render images skip warm-import so torch stays unloaded until upload.
+    if os.environ.get("BRATS_DEMO", "").strip() not in {"1", "true", "yes"} and _find_checkpoint() is not None:
+        threading.Thread(target=_warm_imports, daemon=True).start()
+    port = int(os.environ.get("PORT", "7860"))
     app.run(host="0.0.0.0", port=port)

@@ -1,0 +1,13 @@
+# Password-protected BraTS demo on Render free Docker (512 MB).
+# Set DEMO_PASSWORD in the Dashboard when prompted (sync: false).
+services:
+  - type: web
+    name: mri-brats-demo
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: DEMO_PASSWORD
+        sync: false
+      - key: BRATS_DEMO
+        value: "1"

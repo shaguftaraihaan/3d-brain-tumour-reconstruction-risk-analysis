@@ -1,4 +1,4 @@
-# Hugging Face Space (Docker SDK, CPU). Serves the Flask case explorer on port 7860.
+# Render / Hugging Face Docker (CPU). Flask case explorer; PORT from the host.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -36,6 +36,5 @@ COPY outputs/BraTS20_Training_022 ./outputs/BraTS20_Training_022
 
 EXPOSE 7860
 
-# One worker, long timeout: reconstruction is not enabled in the demo image,
-# but volume/slice reads can still be slow on cold start.
-CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--workers", "1", "--threads", "4", "--timeout", "300", "web.app:app"]
+# Honor Render's PORT (default 7860 locally). One worker keeps RSS down on free tier.
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 1 --threads 4 --timeout 300 web.app:app"]

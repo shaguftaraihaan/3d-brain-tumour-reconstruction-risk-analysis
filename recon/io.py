@@ -15,7 +15,6 @@ from pathlib import Path
 
 import nibabel as nib
 import numpy as np
-from monai.transforms import NormalizeIntensity
 from nibabel.affines import voxel_sizes
 
 # FLAIR, T1, T1ce, T2 — training stack order, BraTS 2021+ filenames.
@@ -98,8 +97,18 @@ def guess_case_id(names, folder: str | None = None) -> str:
     return candidate or "scan"
 
 
-# Same arguments as get_train_transforms / get_val_transforms.
-_normalize_like_training = NormalizeIntensity(nonzero=True, channel_wise=True)
+_normalize_like_training = None
+
+
+def _training_normalizer():
+    """Lazy MONAI normalizer so the demo viewer never imports torch at startup."""
+    global _normalize_like_training
+    if _normalize_like_training is None:
+        from monai.transforms import NormalizeIntensity
+
+        # Same arguments as get_train_transforms / get_val_transforms.
+        _normalize_like_training = NormalizeIntensity(nonzero=True, channel_wise=True)
+    return _normalize_like_training
 
 
 def load_case(case_dir: str | Path, *, normalize: bool = True) -> dict:
@@ -141,7 +150,7 @@ def load_case(case_dir: str | Path, *, normalize: bool = True) -> dict:
 
     stacked = np.stack(channels, axis=0)
     if normalize:
-        image = np.asarray(_normalize_like_training(stacked), dtype=np.float32)
+        image = np.asarray(_training_normalizer()(stacked), dtype=np.float32)
     else:
         image = np.asarray(stacked, dtype=np.float32)
     return {
