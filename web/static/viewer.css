@@ -600,6 +600,23 @@ kbd {
   cursor: not-allowed;
 }
 
+#static-case-picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+#static-case-picker button {
+  width: 100%;
+  text-align: left;
+}
+
+#static-case-picker button.is-active {
+  outline: 1px solid #4f7cff;
+}
+
 #upload-panel .is-disabled,
 #upload-block.is-disabled {
   opacity: 0.75;

@@ -13,6 +13,17 @@ const SEQUENCE_LABELS = { flair: "FLAIR", t1: "T1", t1c: "T1c", t2: "T2" };
 
 export const DEFAULT_ROWS = 5;
 
+export function isStaticDemo() {
+  if (typeof window !== "undefined" && window.__STATIC_DEMO__) return true;
+  const meta = typeof document !== "undefined" ? document.querySelector('meta[name="brats-static-demo"]') : null;
+  return Boolean(meta && meta.content === "1");
+}
+
+export function caseAssetBase(id) {
+  const safe = encodeURIComponent(id);
+  return isStaticDemo() ? `./cases/${safe}` : `/api/cases/${safe}`;
+}
+
 export async function fetchJson(url) {
   const response = await fetch(url);
   let payload = null;
@@ -27,13 +38,14 @@ export async function fetchJson(url) {
 
 /** Location report + uncertainty availability. Each part is null when unavailable. */
 export async function loadExplorerData(id) {
-  const base = `/api/cases/${encodeURIComponent(id)}`;
+  const base = caseAssetBase(id);
+  const uncertaintyUrl = isStaticDemo() ? `${base}/uncertainty.json` : `${base}/uncertainty`;
   const [location, uncertainty] = await Promise.all([
     fetchJson(`${base}/location.json`).catch((error) => {
       console.warn("location.json unavailable:", error);
       return null;
     }),
-    fetchJson(`${base}/uncertainty`).catch((error) => {
+    fetchJson(uncertaintyUrl).catch((error) => {
       console.warn("uncertainty unavailable:", error);
       return null;
     }),
@@ -102,7 +114,8 @@ export function renderTrustBadges(location) {
 export function wireReportLink(id) {
   const link = document.querySelector("#download-report");
   if (!link) return;
-  link.href = `/api/cases/${encodeURIComponent(id)}/report.html`;
+  const base = caseAssetBase(id);
+  link.href = isStaticDemo() ? `${base}/report.html` : `${base}/report.html`;
   link.setAttribute("download", `${id}_report.html`);
   link.target = "_blank";
   link.rel = "noopener";

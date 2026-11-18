@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Case explorer</title>
-  <link rel="stylesheet" href="/static/viewer.css?v=explorer6">
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="stylesheet" href="/static/viewer.css?v=explorer7">
   <script type="importmap">
     {
       "imports": {
@@ -109,6 +110,13 @@
         <p id="volume-floor-chip" class="warn-chip" hidden>
           Whole-tumor volume is below the 20.9 mL BraTS size floor
         </p>
+      </section>
+
+      <section id="static-case-picker" aria-label="Demo cases" hidden>
+        <div class="section-head">
+          <h2>Demo cases</h2>
+        </div>
+        <ul id="static-case-list"></ul>
       </section>
 
       <section id="upload-panel" aria-label="Upload scan">
@@ -271,6 +279,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="/static/viewer.js?v=explorer6"></script>
+  <script type="module" src="/static/viewer.js?v=explorer7"></script>
 </body>
 </html>

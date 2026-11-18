@@ -12,6 +12,8 @@ import {
   contourOptionsFor,
   createStructureExplorer,
   createTour,
+  caseAssetBase,
+  isStaticDemo,
   loadExplorerData,
   onCanvasClick,
   paintAcsStrip,
@@ -24,7 +26,7 @@ import {
   wireAcsStrip,
   wireReportLink,
   worldToVoxel,
-} from "./explorer-ui.js?v=explorer6";
+} from "./explorer-ui.js?v=explorer7";
 
 const AXIS_NAME = ["Sagittal", "Coronal", "Axial"];
 const TUMOR_ORDER = ["enhancing", "necrosis", "edema"];
@@ -84,6 +86,8 @@ const SCAN_ROLES = {
 const SCAN_ORDER = ["t2f", "t1n", "t1c", "t2w", "seg", "synthseg"];
 const REQUIRED_SCANS = SCAN_ORDER.filter((role) => SCAN_ROLES[role].required);
 const upload = { files: [], folder: null, caseId: null, skipped: 0, dicom: false };
+/** Populated in static mode from ``volume.json`` so slice URLs can snap to exported indices. */
+let staticVolumeMeta = null;
 
 setupUpload();
 loadCasePicker();
@@ -399,16 +403,87 @@ function formatSeconds(value) {
   return minutes ? `${minutes}:${String(rest).padStart(2, "0")}` : `${seconds.toFixed(1)}s`;
 }
 
+function applyDisabledUpload(message) {
+  const note = document.querySelector("#demo-note");
+  const block = document.querySelector("#upload-block");
+  const submit = document.querySelector("#upload-submit");
+  const panelBtn = document.querySelector("#upload-scan-btn");
+  const panelNote = document.querySelector("#upload-panel-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = message;
+  }
+  if (block) {
+    block.hidden = false;
+    block.classList.add("is-disabled");
+    block.querySelectorAll("input,button").forEach((el) => {
+      el.disabled = true;
+    });
+  }
+  if (submit) submit.disabled = true;
+  if (panelBtn) {
+    panelBtn.disabled = true;
+    panelBtn.title = message;
+    panelBtn.textContent = "Upload scan (unavailable in this demo)";
+  }
+  if (panelNote) panelNote.textContent = message;
+}
+
+function disableStaticOnlyControls() {
+  if (!isStaticDemo()) return;
+  const modality = document.querySelector("#modality");
+  if (modality) {
+    modality.disabled = true;
+    modality.title = "Other MRI modalities need the live server. This static demo ships FLAIR only.";
+  }
+  ["#wl-seq", "#wl-width", "#wl-level"].forEach((selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return;
+    el.disabled = true;
+    el.title = "Window/level needs the live server. This demo uses a fixed FLAIR window.";
+  });
+}
+
+async function populateStaticCaseSwitcher() {
+  if (!isStaticDemo()) return;
+  const host = document.querySelector("#static-case-picker");
+  const list = document.querySelector("#static-case-list");
+  if (!host || !list) return;
+  try {
+    const payload = await fetch("./cases.json").then(readJson);
+    const cases = Array.isArray(payload.cases) ? payload.cases : [];
+    list.replaceChildren();
+    for (const id of cases) {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = id;
+      if (id === caseId) button.classList.add("is-active");
+      button.addEventListener("click", () => {
+        location.href = `./index.html?case=${encodeURIComponent(id)}`;
+      });
+      item.appendChild(button);
+      list.appendChild(item);
+    }
+    host.hidden = cases.length === 0;
+  } catch (_error) {
+    host.hidden = true;
+  }
+}
+
 async function loadCasePicker() {
   const status = document.querySelector("#case-picker-status");
   const list = document.querySelector("#case-list");
   if (!status || !list) return;
   try {
-    const payload = await fetch("/api/cases").then(readJson);
+    const url = isStaticDemo() ? "./cases.json" : "/api/cases";
+    const payload = await fetch(url).then(readJson);
     const cases = Array.isArray(payload.cases) ? payload.cases : [];
     list.replaceChildren();
     if (!cases.length) {
-      status.textContent = "No finished cases in outputs/ yet. Upload a scan below.";
+      status.textContent = isStaticDemo()
+        ? "No demo cases were exported."
+        : "No finished cases in outputs/ yet. Upload a scan below.";
       return;
     }
     status.textContent = `${cases.length} case${cases.length === 1 ? "" : "s"} ready to open:`;
@@ -418,7 +493,10 @@ async function loadCasePicker() {
       button.type = "button";
       button.textContent = id;
       button.addEventListener("click", () => {
-        location.href = `/viewer?case=${encodeURIComponent(id)}`;
+        const next = isStaticDemo()
+          ? `./index.html?case=${encodeURIComponent(id)}`
+          : `/viewer?case=${encodeURIComponent(id)}`;
+        location.href = next;
       });
       item.appendChild(button);
       list.appendChild(item);
@@ -429,34 +507,20 @@ async function loadCasePicker() {
 }
 
 async function loadCapabilities() {
-  const note = document.querySelector("#demo-note");
-  const block = document.querySelector("#upload-block");
-  const submit = document.querySelector("#upload-submit");
   const panelBtn = document.querySelector("#upload-scan-btn");
   const panelNote = document.querySelector("#upload-panel-note");
+  if (isStaticDemo()) {
+    applyDisabledUpload("Upload scan needs the trained model. Run locally to analyse your own scan.");
+    disableStaticOnlyControls();
+    populateStaticCaseSwitcher();
+    return;
+  }
   try {
     const caps = await fetch("/api/capabilities").then(readJson);
     const message = caps.message || "Upload and inference are not available in this demo.";
     // Always keep Upload scan visible. Demo mode: disabled with explanation.
     if (!caps.upload) {
-      if (note) {
-        note.hidden = false;
-        note.textContent = message;
-      }
-      if (block) {
-        block.hidden = false;
-        block.classList.add("is-disabled");
-        block.querySelectorAll("input,button").forEach((el) => {
-          el.disabled = true;
-        });
-      }
-      if (submit) submit.disabled = true;
-      if (panelBtn) {
-        panelBtn.disabled = true;
-        panelBtn.title = message;
-        panelBtn.textContent = "Upload scan (unavailable in this demo)";
-      }
-      if (panelNote) panelNote.textContent = message;
+      applyDisabledUpload(message);
       return;
     }
     if (panelBtn) {
@@ -476,6 +540,26 @@ async function loadCapabilities() {
     // Keep the upload UI visible if the capabilities endpoint is unavailable.
     if (panelBtn) panelBtn.disabled = false;
   }
+}
+
+function snapStaticIndex(axis, index) {
+  if (!isStaticDemo() || !staticVolumeMeta?.static) return index;
+  const exported = staticVolumeMeta.static.exported_indices?.[String(axis)];
+  if (Array.isArray(exported) && exported.length) {
+    let best = exported[0];
+    let bestDist = Math.abs(best - index);
+    for (const value of exported) {
+      const dist = Math.abs(value - index);
+      if (dist < bestDist) {
+        best = value;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+  const stride = Math.max(1, Number(staticVolumeMeta.static.stride) || 1);
+  const max = Math.max(0, (staticVolumeMeta.shape?.[axis] || 1) - 1);
+  return Math.min(max, Math.max(0, Math.round(index / stride) * stride));
 }
 
 function showPanelState(selector, mode, message, onRetry) {
@@ -540,7 +624,10 @@ async function startViewer(id) {
   showPanelState("#slice-state", "loading", "Loading slices…");
   let manifest;
   try {
-    manifest = await fetch(`/api/cases/${encodeURIComponent(id)}/manifest.json?v=ui2`).then(readJson);
+    const manifestUrl = isStaticDemo()
+      ? `${caseAssetBase(id)}/manifest.json`
+      : `${caseAssetBase(id)}/manifest.json?v=ui2`;
+    manifest = await fetch(manifestUrl).then(readJson);
   } catch (error) {
     showPanelState("#view-state", "error", `Could not load case data: ${error.message || error}`, () => {
       startViewer(id);
@@ -620,7 +707,9 @@ async function startViewer(id) {
   let gltf;
   try {
     gltf = await new GLTFLoader().loadAsync(
-      `/api/cases/${encodeURIComponent(id)}/scene.glb?v=explorer6`,
+      isStaticDemo()
+        ? `${caseAssetBase(id)}/scene.glb`
+        : `${caseAssetBase(id)}/scene.glb?v=explorer7`,
     );
   } catch (error) {
     showPanelState("#view-state", "error", `Could not load 3D scene: ${error.message || error}`, () => {
@@ -687,13 +776,21 @@ async function startViewer(id) {
 
   let volume;
   try {
-    volume = await fetch(`/api/cases/${encodeURIComponent(id)}/volume?modality=flair`).then(readJson);
+    const volumeUrl = isStaticDemo()
+      ? `${caseAssetBase(id)}/volume.json`
+      : `${caseAssetBase(id)}/volume?modality=flair`;
+    volume = await fetch(volumeUrl).then(readJson);
+    staticVolumeMeta = isStaticDemo() ? volume : null;
     hidePanelState("#slice-state");
   } catch (error) {
     showPanelState("#slice-state", "error", `Could not load volume: ${error.message || error}`, async () => {
       try {
         showPanelState("#slice-state", "loading", "Loading slices…");
-        volume = await fetch(`/api/cases/${encodeURIComponent(id)}/volume?modality=flair`).then(readJson);
+        const volumeUrl = isStaticDemo()
+          ? `${caseAssetBase(id)}/volume.json`
+          : `${caseAssetBase(id)}/volume?modality=flair`;
+        volume = await fetch(volumeUrl).then(readJson);
+        staticVolumeMeta = isStaticDemo() ? volume : null;
         hidePanelState("#slice-state");
         location.reload();
       } catch (retryError) {
@@ -701,10 +798,12 @@ async function startViewer(id) {
       }
     });
     volume = { shape: [1, 1, 1], windows: {}, affine: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]], bbox: { lo: [0,0,0], hi: [0,0,0] }, letters: {} };
+    staticVolumeMeta = null;
   }
+  disableStaticOnlyControls();
   const clipState = volume.shape.map((length, axis) => ({
     enabled: false,
-    index: Math.floor((length - 1) / 2),
+    index: snapStaticIndex(axis, Math.floor((length - 1) / 2)),
   }));
   const sliceView = {
     axis: 2,
@@ -760,8 +859,9 @@ async function startViewer(id) {
   redrawSlices(volume, sliceView);
 
   document.querySelector("#modality").addEventListener("change", async (event) => {
+    if (isStaticDemo()) return;
     volume = await fetch(
-      `/api/cases/${encodeURIComponent(id)}/volume?modality=${event.target.value}`,
+      `${caseAssetBase(id)}/volume?modality=${event.target.value}`,
     ).then(readJson);
     clipState.forEach((state, axis) => {
       state.index = Math.min(state.index, volume.shape[axis] - 1);
@@ -2053,6 +2153,11 @@ function copyWindows(windows) {
 }
 
 function sliceUrl(modality, axis, index, sliceView) {
+  const snapped = snapStaticIndex(axis, index);
+  if (isStaticDemo()) {
+    // Static export ships FLAIR at a fixed window only.
+    return `${caseAssetBase(caseId)}/slices/flair_a${axis}_i${snapped}.png`;
+  }
   const win = sliceView?.windows?.[modality];
   const params = new URLSearchParams({
     modality,
@@ -2063,11 +2168,19 @@ function sliceUrl(modality, axis, index, sliceView) {
     params.set("lo", String(win.lo));
     params.set("hi", String(win.hi));
   }
-  return `/api/cases/${encodeURIComponent(caseId)}/slice?${params}`;
+  return `${caseAssetBase(caseId)}/slice?${params}`;
 }
 
 function overlayUrl(axis, index) {
-  return `/api/cases/${encodeURIComponent(caseId)}/overlay?source=${encodeURIComponent(uncertaintySource)}&axis=${axis}&index=${index}`;
+  const snapped = snapStaticIndex(axis, index);
+  if (isStaticDemo()) {
+    if (uncertaintySource === "prob") {
+      return `${caseAssetBase(caseId)}/slices/overlay_model_a${axis}_i${snapped}.png`;
+    }
+    const kind = uncertaintySource === "second" ? "overlay_second" : "overlay_model";
+    return `${caseAssetBase(caseId)}/slices/${kind}_a${axis}_i${snapped}.png`;
+  }
+  return `${caseAssetBase(caseId)}/overlay?source=${encodeURIComponent(uncertaintySource)}&axis=${axis}&index=${index}`;
 }
 
 function makeCrosshairMarker() {
@@ -2109,8 +2222,13 @@ function wireSlicePanel(volume, clipState, sliceView, marker, onChange, onPick) 
     });
   });
   slider.addEventListener("input", () => {
-    sliceView.index = Number(slider.value);
-    readout.textContent = slider.value;
+    let next = Number(slider.value);
+    if (isStaticDemo()) {
+      next = snapStaticIndex(sliceView.axis, next);
+      slider.value = String(next);
+    }
+    sliceView.index = next;
+    readout.textContent = String(next);
     applySliceToClip(clipState, sliceView, true);
     onChange();
     redrawSlices(volume, sliceView);
