@@ -48,8 +48,6 @@ const ORIENT_LETTERS = {
 const PRESETS = [
   { id: "glass-tumor", label: "Glass + tumor" },
   { id: "tumor-focus", label: "Tumor focus" },
-  { id: "anatomy", label: "Anatomy" },
-  { id: "tumor-tracts", label: "Tumor + Tracts" },
 ];
 const TUMOR_LABELS = new Set(["enhancing", "necrosis", "edema"]);
 const TISSUE_LABELS = {
@@ -667,10 +665,17 @@ async function startViewer(id) {
     onChange: (source) => {
       uncertaintySource = source;
       overlayKey = "";
+      overlayImage = null;
+      const legend = document.querySelector("#uncertainty-legend");
+      if (legend) legend.hidden = source !== "second";
       refreshClips();
       redrawSlices(volume, sliceView);
     },
   });
+  {
+    const legend = document.querySelector("#uncertainty-legend");
+    if (legend) legend.hidden = uncertaintySource !== "second";
+  }
   redrawSlices(volume, sliceView);
 
   document.querySelector("#modality").addEventListener("change", async (event) => {
@@ -806,7 +811,13 @@ async function startViewer(id) {
   };
   const showAllStructures = () => {
     restoreGhost();
-    transitionWithCamera(camera, controls, () => applyPreset("anatomy", byName, camera, controls, gltf.scene));
+    transitionWithCamera(camera, controls, () => {
+      byName.forEach((_mesh, name) => setVisible(byName, name, true));
+      syncGroupSliders(byName);
+      frameCamera(camera, controls, gltf.scene);
+      clearPresetActive();
+      syncLegend(byName);
+    });
   };
   const resetStructures = () => {
     restoreGhost();
@@ -923,8 +934,10 @@ async function startViewer(id) {
   }
 
   function resize() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+    // Size to the 3D pane, not the full window — otherwise the canvas covers the slices column.
+    const wrap = document.querySelector("#view-wrap");
+    const width = Math.max(1, wrap?.clientWidth || window.innerWidth);
+    const height = Math.max(1, wrap?.clientHeight || window.innerHeight);
     renderer.setSize(width, height, false);
     labelRenderer.setSize(width, height);
     camera.aspect = width / Math.max(height, 1);
@@ -1306,10 +1319,6 @@ function applyPreset(id, byName, camera, controls, root) {
       if (group === "Tumor") restoreOpacity(mesh);
     });
     frameTumorView(camera, controls, byName);
-  } else if (id === "anatomy") {
-    names.forEach((name) => setVisible(byName, name, true));
-    syncGroupSliders(byName);
-    frameCamera(camera, controls, root);
   } else if (id === "tumor-focus") {
     names.forEach((name) => {
       const mesh = byName.get(name);
@@ -1324,21 +1333,6 @@ function applyPreset(id, byName, camera, controls, root) {
     setSlider("Cortex", 1);
     setSlider("Tumor", 1);
     frameTumorView(camera, controls, byName);
-  } else if (id === "tumor-tracts") {
-    names.forEach((name) => {
-      const mesh = byName.get(name);
-      const show = mesh.userData.group === "Tumor" || mesh.userData.group === "Tracts";
-      setVisible(byName, name, show);
-      if (!show) return;
-      if (mesh.userData.group === "Tumor") restoreOpacity(mesh);
-      else restoreOpacity(mesh);
-    });
-    setSlider("Tumor", 1);
-    setSlider("Tracts", 1);
-    frameObjects(camera, controls, [
-      ...meshesInGroup(byName, "Tumor"),
-      ...meshesInGroup(byName, "Tracts"),
-    ]);
   }
   document.querySelectorAll("[data-preset]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.preset === id);
@@ -2111,9 +2105,10 @@ function layoutSliceFrame(figure, volume, axis) {
   const extent = (volume.extent_mm && volume.extent_mm[String(axis)]) || [1, 1];
   const aspect = Number(extent[0]) / Math.max(Number(extent[1]), 1e-6);
   const box = figure.getBoundingClientRect();
-  let width = box.width;
+  // When the figure has no laid-out height yet, do not clamp to 0×0 (blank black box).
+  let width = Math.max(box.width, 1);
   let height = width / aspect;
-  if (height > box.height) {
+  if (box.height > 1 && height > box.height) {
     height = box.height;
     width = height * aspect;
   }

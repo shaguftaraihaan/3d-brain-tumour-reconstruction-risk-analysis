@@ -102,8 +102,10 @@ export function renderTrustBadges(location) {
 export function wireReportLink(id) {
   const link = document.querySelector("#download-report");
   if (!link) return;
-  link.href = `/api/cases/${encodeURIComponent(id)}/report.pdf`;
-  link.setAttribute("download", `${id}_report.pdf`);
+  link.href = `/api/cases/${encodeURIComponent(id)}/report.html`;
+  link.setAttribute("download", `${id}_report.html`);
+  link.target = "_blank";
+  link.rel = "noopener";
 }
 
 /* ------------------------------------------------------------------ */
@@ -466,6 +468,7 @@ export function paintAcsStrip(opts) {
       caption.textContent = `${caption.dataset.base} · ${index}`;
     }
     const token = ++acsTokens[axis];
+    figure.querySelectorAll(".acs-error").forEach((el) => el.remove());
     Promise.all([
       loadImage(opts.sliceUrl(axis, index)),
       loadImage(opts.overlayUrl(axis, index)).catch(() => null),
@@ -474,7 +477,14 @@ export function paintAcsStrip(opts) {
         if (acsTokens[axis] !== token) return;
         drawAcs(canvas, base, overlay, axis, indices, volume, opts);
       })
-      .catch((error) => console.warn("ACS slice failed:", error));
+      .catch((error) => {
+        console.warn("ACS slice failed:", error);
+        if (acsTokens[axis] !== token) return;
+        const msg = document.createElement("div");
+        msg.className = "acs-error";
+        msg.textContent = `Could not load slice: ${error && error.message ? error.message : error}`;
+        figure.appendChild(msg);
+      });
   });
 }
 
@@ -576,19 +586,29 @@ export function onCanvasClick(canvas, onClick, { maxMove = 5, maxMs = 700 } = {}
 export function setupUncertainty(uncertainty, { initial = "model", onChange } = {}) {
   const host = document.querySelector("#uncertainty-modes");
   const diceEl = document.querySelector("#uncertainty-dice");
+  const reasons = (uncertainty && uncertainty.reasons) || {};
   const available = {
     model: uncertainty ? uncertainty.has_model !== false : true,
     second: Boolean(uncertainty && uncertainty.has_second),
     prob: Boolean(uncertainty && uncertainty.has_prob),
   };
-  let current = initial;
+  let current = available[initial] === false ? "model" : initial;
   const buttons = host ? [...host.querySelectorAll("[data-unc]")] : [];
+  const reasonFor = (source) => {
+    if (reasons[source]) return reasons[source];
+    if (source === "prob") return "Needs the model, not available in this demo";
+    if (source === "second") return "No expert ground-truth mask for this case.";
+    return "Not available for this case";
+  };
   const sync = () => {
     buttons.forEach((button) => {
       const source = button.dataset.unc;
       const ok = available[source] !== false;
       button.disabled = !ok;
-      button.title = ok ? "" : "Not available for this case";
+      button.title = ok ? "" : reasonFor(source);
+      if (source === "prob") {
+        button.textContent = ok ? "Probability" : "Needs the model, not available in this demo";
+      }
       button.classList.toggle("is-active", source === current);
       button.setAttribute("aria-pressed", String(source === current));
     });
@@ -597,6 +617,8 @@ export function setupUncertainty(uncertainty, { initial = "model", onChange } = 
       if (dice && Object.keys(dice).length) {
         const part = (label, value) => (finite(value) === null ? null : `${label} ${Number(value).toFixed(3)}`);
         diceEl.textContent = `Dice, model vs second mask: ${[part("WT", dice.wt), part("TC", dice.tc), part("ET", dice.et)].filter(Boolean).join(" · ")}`;
+      } else if (!available.second) {
+        diceEl.textContent = reasonFor("second");
       } else {
         diceEl.textContent = "Dice unavailable until two masks are present.";
       }
@@ -941,8 +963,8 @@ export function buildTourSteps({ location, manifest, volume }) {
     {
       id: "sequences",
       title: "MRI sequences",
-      preset: "anatomy",
-      highlight: "#slice-grid",
+      preset: "glass-tumor",
+      highlight: "#acs-strip",
       caption: sequences.length
         ? `${sequences.length} MRI sequence${sequences.length === 1 ? "" : "s"} loaded: ${sequences.join(", ")}. Compare them in the slice panel.`
         : "MRI sequences for this case are shown in the slice panel.",
@@ -982,7 +1004,7 @@ export function buildTourSteps({ location, manifest, volume }) {
     {
       id: "nearest",
       title: "Nearest structures",
-      preset: "anatomy",
+      preset: "glass-tumor",
       highlight: "#tumor-location",
       caption: nearestCaption,
       nearestNames: loc.withheld ? [] : top.map((row) => row.name),

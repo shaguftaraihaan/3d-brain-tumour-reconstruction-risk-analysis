@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Case explorer</title>
-  <link rel="stylesheet" href="/static/viewer.css?v=explorer1">
+  <link rel="stylesheet" href="/static/viewer.css?v=explorer3">
   <script type="importmap">
     {
       "imports": {
@@ -142,6 +142,10 @@
           <button type="button" data-unc="second" disabled>Second mask</button>
           <button type="button" data-unc="prob" disabled>Probability</button>
         </div>
+        <p id="uncertainty-legend" class="legend" hidden>
+          <span class="mask-model">Model mask</span>
+          <span class="mask-expert">Expert / second mask</span>
+        </p>
         <p id="uncertainty-dice" class="muted">Dice unavailable until two masks are present.</p>
       </section>
 
@@ -175,7 +179,7 @@
 
       <section>
         <h2>MRI slice</h2>
-        <p class="muted">The 2×2 panel matches this plane. Change sequence to recolour the 3D cut.</p>
+        <p class="muted">Sequence colours the 3D cut planes. Linked ACS views are on the left.</p>
         <label>Sequence
           <select id="modality">
             <option value="flair">FLAIR</option>
@@ -194,92 +198,55 @@
     </aside>
 
     <section id="slices-panel">
-      <details id="slices-details" open>
-        <summary>
-          <span>Slices</span>
-          <span class="slice-orients" role="group" aria-label="Slice orientation">
-            <button type="button" data-orient="2" class="is-active">Axial</button>
-            <button type="button" data-orient="1">Coronal</button>
-            <button type="button" data-orient="0">Sagittal</button>
-          </span>
-        </summary>
-        <div id="slices-body">
-          <div id="slice-state" class="panel-state" hidden role="status">
-            <p class="state-message">Loading slices…</p>
-            <button type="button" class="retry" hidden>Retry</button>
-          </div>
-          <div id="acs-strip" aria-label="Linked orthogonal slices">
-            <figure data-acs="2"><canvas></canvas><figcaption>Axial</figcaption></figure>
-            <figure data-acs="1"><canvas></canvas><figcaption>Coronal</figcaption></figure>
-            <figure data-acs="0"><canvas></canvas><figcaption>Sagittal</figcaption></figure>
-          </div>
-          <div id="slice-grid">
-            <figure data-seq="flair">
-              <div class="slice-frame">
-                <span class="orient top" data-edge="top"></span>
-                <span class="orient bottom" data-edge="bottom"></span>
-                <span class="orient left" data-edge="left"></span>
-                <span class="orient right" data-edge="right"></span>
-                <canvas></canvas>
-              </div>
-              <figcaption>FLAIR</figcaption>
-            </figure>
-            <figure data-seq="t1">
-              <div class="slice-frame">
-                <span class="orient top" data-edge="top"></span>
-                <span class="orient bottom" data-edge="bottom"></span>
-                <span class="orient left" data-edge="left"></span>
-                <span class="orient right" data-edge="right"></span>
-                <canvas></canvas>
-              </div>
-              <figcaption>T1</figcaption>
-            </figure>
-            <figure data-seq="t1c">
-              <div class="slice-frame">
-                <span class="orient top" data-edge="top"></span>
-                <span class="orient bottom" data-edge="bottom"></span>
-                <span class="orient left" data-edge="left"></span>
-                <span class="orient right" data-edge="right"></span>
-                <canvas></canvas>
-              </div>
-              <figcaption>T1c</figcaption>
-            </figure>
-            <figure data-seq="t2">
-              <div class="slice-frame">
-                <span class="orient top" data-edge="top"></span>
-                <span class="orient bottom" data-edge="bottom"></span>
-                <span class="orient left" data-edge="left"></span>
-                <span class="orient right" data-edge="right"></span>
-                <canvas></canvas>
-              </div>
-              <figcaption>T2</figcaption>
-            </figure>
-          </div>
-          <label class="slice-slider">Slice
-            <input id="slice-index" type="range" min="0" max="1" value="0">
-            <span id="slice-index-readout">0</span>
-          </label>
-          <label class="slice-slider">Overlay opacity
-            <input id="overlay-opacity" type="range" min="0" max="1" step="0.05" value="0.85">
-          </label>
-          <div id="wl-box">
-            <label>Window / level
-              <select id="wl-seq">
-                <option value="flair">FLAIR</option>
-                <option value="t1">T1</option>
-                <option value="t1c">T1c</option>
-                <option value="t2">T2</option>
-              </select>
-            </label>
-            <label class="slice-slider">Window
-              <input id="wl-width" type="range" min="1" max="1000" value="400">
-            </label>
-            <label class="slice-slider">Level
-              <input id="wl-level" type="range" min="0" max="1000" value="200">
-            </label>
-          </div>
+      <header class="slices-head">
+        <span>Slices</span>
+        <span class="slice-orients" role="group" aria-label="Slice orientation">
+          <button type="button" data-orient="2" class="is-active">Axial</button>
+          <button type="button" data-orient="1">Coronal</button>
+          <button type="button" data-orient="0">Sagittal</button>
+        </span>
+      </header>
+      <div id="slices-body">
+        <div id="slice-state" class="panel-state" hidden role="status">
+          <p class="state-message">Loading slices…</p>
+          <button type="button" class="retry" hidden>Retry</button>
         </div>
-      </details>
+        <div id="acs-strip" aria-label="Linked orthogonal slices">
+          <figure data-acs="2"><canvas></canvas><figcaption>Axial</figcaption></figure>
+          <figure data-acs="1"><canvas></canvas><figcaption>Coronal</figcaption></figure>
+          <figure data-acs="0"><canvas></canvas><figcaption>Sagittal</figcaption></figure>
+        </div>
+        <!-- Kept for window/level paint helpers; visually hidden in the left column layout. -->
+        <div id="slice-grid" hidden>
+          <figure data-seq="flair"><div class="slice-frame"><canvas></canvas></div></figure>
+          <figure data-seq="t1"><div class="slice-frame"><canvas></canvas></div></figure>
+          <figure data-seq="t1c"><div class="slice-frame"><canvas></canvas></div></figure>
+          <figure data-seq="t2"><div class="slice-frame"><canvas></canvas></div></figure>
+        </div>
+        <label class="slice-slider">Slice
+          <input id="slice-index" type="range" min="0" max="1" value="0">
+          <span id="slice-index-readout">0</span>
+        </label>
+        <label class="slice-slider">Overlay opacity
+          <input id="overlay-opacity" type="range" min="0" max="1" step="0.05" value="0.85">
+        </label>
+        <div id="wl-box">
+          <label>Window / level
+            <select id="wl-seq">
+              <option value="flair">FLAIR</option>
+              <option value="t1">T1</option>
+              <option value="t1c">T1c</option>
+              <option value="t2">T2</option>
+            </select>
+          </label>
+          <label class="slice-slider">Window
+            <input id="wl-width" type="range" min="1" max="1000" value="400">
+          </label>
+          <label class="slice-slider">Level
+            <input id="wl-level" type="range" min="0" max="1000" value="200">
+          </label>
+        </div>
+      </div>
     </section>
 
     <div id="tooltip" hidden></div>
@@ -296,6 +263,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="/static/viewer.js?v=explorer1"></script>
+  <script type="module" src="/static/viewer.js?v=explorer3"></script>
 </body>
 </html>
