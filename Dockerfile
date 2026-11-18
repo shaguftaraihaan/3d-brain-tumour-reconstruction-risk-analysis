@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PORT=7860 \
-    BRATS_DEMO=1
+    BRATS_DEMO=1 \
+    MALLOC_ARENA_MAX=2
 
 WORKDIR /app
 
@@ -14,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # CPU-only PyTorch, then the rest of the app stack.
+# Torch is installed for upload/full mode but must stay unloaded while BRATS_DEMO=1.
 RUN pip install --upgrade pip \
  && pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
 
@@ -36,5 +38,5 @@ COPY outputs/BraTS20_Training_022 ./outputs/BraTS20_Training_022
 
 EXPOSE 7860
 
-# Honor Render's PORT (default 7860 locally). One worker keeps RSS down on free tier.
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 1 --threads 4 --timeout 300 web.app:app"]
+# One worker, few threads, recycle workers before RSS can climb past the free tier.
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-7860} --workers 1 --threads 2 --timeout 120 --max-requests 40 --max-requests-jitter 10 web.app:app"]

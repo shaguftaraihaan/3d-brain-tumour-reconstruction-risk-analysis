@@ -10,10 +10,12 @@ Run:
 
 from __future__ import annotations
 
+import gc
 import io
 import logging
 import os
 import re
+import resource
 import secrets
 import sys
 import threading
@@ -42,7 +44,31 @@ _VOLUME_CACHE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
 # Bump when viewer static assets change so deploys never serve stale JS/CSS.
-_STATIC_ASSET_VERSION = "explorer4"
+_STATIC_ASSET_VERSION = "explorer6"
+
+
+def _demo_mode() -> bool:
+    return os.environ.get("BRATS_DEMO", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _process_rss_mb() -> float:
+    """Current process RSS in MiB (not lifetime high-water mark)."""
+    status = Path("/proc/self/status")
+    if status.is_file():
+        for line in status.read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                return round(int(line.split()[1]) / 1024, 1)
+    try:
+        import subprocess
+
+        out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())], text=True).strip()
+        # macOS/BSD `ps` rss is KiB.
+        return round(int(out) / 1024, 1)
+    except Exception:
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if sys.platform == "darwin":
+            return round(usage / (1024 * 1024), 1)
+        return round(usage / 1024, 1)
 
 
 def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -> Flask:
@@ -66,6 +92,11 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
                 response.headers.setdefault("Cache-Control", "public, max-age=3600")
         elif path.endswith(".glb") or path.endswith("scene.glb"):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        if _demo_mode() and path.startswith("/api/"):
+            # Drop decoded volumes between requests so RSS does not accumulate.
+            with _VOLUME_CACHE_LOCK:
+                app.config["VOLUMES"].clear()
+            gc.collect()
         return response
 
     @app.before_request
@@ -91,7 +122,8 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
 
     @app.get("/healthz")
     def healthz():
-        return jsonify({"ok": True}), 200
+        rss_mb = _process_rss_mb()
+        return jsonify({"ok": True, "rss_mb": rss_mb, "demo": _demo_mode()}), 200
 
     @app.get("/")
     def landing_page():
@@ -224,10 +256,10 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
         lo, hi = _foreground_bbox(data)
         brain = _brain_mask(app, case_id, data)
         windows = {}
-        for name in SEQUENCE_ORDER:
+        # Demo: window only the active modality (avoid loading all four volumes).
+        names = (suffix,) if _demo_mode() else SEQUENCE_ORDER
+        for name in names:
             try:
-                # Only the requested modality stays cached; others are loaded briefly
-                # for window stats so demo RSS fits Render's 512 MB free tier.
                 if resolve_sequence(name) == suffix:
                     volume = data
                 else:
@@ -239,6 +271,11 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
             windows[name] = {"lo": wlo, "hi": whi, "suffix": resolve_sequence(name)}
             if resolve_sequence(name) != suffix:
                 del volume
+        if _demo_mode():
+            # Advertise the usual sequence keys so the UI keeps working; reuse active window.
+            active = windows.get(suffix) or next(iter(windows.values()), {"lo": 0.0, "hi": 1.0, "suffix": suffix})
+            for name in SEQUENCE_ORDER:
+                windows.setdefault(name, {"lo": active["lo"], "hi": active["hi"], "suffix": resolve_sequence(name)})
         key = modality if modality in windows else "flair"
         chosen = windows.get(key, next(iter(windows.values()), {"lo": 0.0, "hi": 1.0}))
         from nibabel.affines import voxel_sizes
@@ -262,26 +299,47 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
 
     @app.get("/api/cases/<case_id>/slice")
     def slice_png(case_id: str):
+        from recon.slices import cache_path, resolve_sequence, window_token
+
         modality = request.args.get("modality", "flair")
         try:
             axis = int(request.args.get("axis", "2"))
             index = int(request.args.get("index", "0"))
         except (TypeError, ValueError):
             return jsonify({"error": "axis and index must be integers"}), 400
+        if axis not in (0, 1, 2):
+            return jsonify({"error": "axis must be 0, 1, or 2"}), 400
+        # Prefer an on-disk PNG when lo/hi are supplied so we never decode the volume.
+        lo_raw = request.args.get("lo")
+        hi_raw = request.args.get("hi")
+        if lo_raw not in (None, "") and hi_raw not in (None, ""):
+            try:
+                lo = float(lo_raw)
+                hi = float(hi_raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "lo and hi must be numbers"}), 400
+            suffix = resolve_sequence(modality)
+            path = cache_path(
+                _slice_cache_dir(app, case_id),
+                suffix,
+                axis,
+                index,
+                window_token(lo, hi) + "_rgba_fg5",
+            )
+            if path.is_file():
+                return send_file(path, mimetype="image/png", max_age=120)
         try:
             data, _affine = _cached_volume(app, case_id, modality)
         except FileNotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        if axis not in (0, 1, 2):
-            return jsonify({"error": "axis must be 0, 1, or 2"}), 400
         if index < 0 or index >= data.shape[axis]:
             return jsonify({"error": f"index {index} is outside axis {axis} (length {data.shape[axis]})"}), 400
         brain = _brain_mask(app, case_id, data)
         default_lo, default_hi = _window_for(data, brain if brain is not None and brain.shape == data.shape else None)
-        lo = _optional_float(request.args.get("lo"), default_lo)
-        hi = _optional_float(request.args.get("hi"), default_hi)
+        lo = _optional_float(lo_raw, default_lo)
+        hi = _optional_float(hi_raw, default_hi)
         alpha = _combined_foreground(app, case_id, data.shape)
         png = _cached_slice_png(app, case_id, modality, data, axis, index, lo, hi, alpha=alpha)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=120)
@@ -562,12 +620,21 @@ def _find_checkpoint() -> Path | None:
 
 def _capabilities() -> dict:
     """Upload/inference availability for the HF demo and local installs."""
+    if _demo_mode():
+        return {
+            "upload": False,
+            "inference": False,
+            "checkpoint": False,
+            "demo": True,
+            "message": _DEMO_UNAVAILABLE,
+        }
     checkpoint = _find_checkpoint()
     upload = checkpoint is not None
     return {
         "upload": upload,
         "inference": upload,
         "checkpoint": bool(checkpoint),
+        "demo": False,
         "message": None if upload else _DEMO_UNAVAILABLE,
     }
 
@@ -676,8 +743,11 @@ def _read_volume(app: Flask, case_id: str, modality: str):
 
     suffix = resolve_sequence(modality)
     path = _find_modality(_case_dir(app, case_id), suffix)
-    image = nib.as_closest_canonical(nib.load(str(path)))
-    data = np.squeeze(np.asanyarray(image.dataobj)).astype(np.float32, copy=False)
+    # mmap keeps the OS page cache in charge; we still cast a float32 view for windowing.
+    image = nib.as_closest_canonical(nib.load(str(path), mmap=True))
+    data = np.squeeze(np.asanyarray(image.dataobj, dtype=np.float32))
+    if data.dtype != np.float32:
+        data = data.astype(np.float32, copy=False)
     if data.ndim != 3:
         raise ValueError(f"{path.name} is not a 3D volume")
     return data, np.asarray(image.affine, dtype=np.float64)
@@ -806,24 +876,27 @@ def _combined_foreground(app: Flask, case_id: str, shape) -> np.ndarray:
         path = out_dir / name
         if not path.is_file():
             continue
-        image = nib.as_closest_canonical(nib.load(str(path)))
-        labels = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        image = nib.as_closest_canonical(nib.load(str(path), mmap=True))
+        labels = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
         if labels.shape != fg.shape:
             continue
         if name != "pred_seg.nii.gz":
             has_parc = has_parc or np.any(labels)
         fg |= labels != 0
+        del labels
     if has_parc:
         fg = ndimage.binary_dilation(fg)
         cache[key] = fg
         return fg
-    for name in SEQUENCE_ORDER:
-        try:
-            volume, _ = _cached_volume(app, case_id, name)
-        except (FileNotFoundError, ValueError):
-            continue
-        if volume.shape == fg.shape:
-            fg |= np.isfinite(volume) & (volume != 0)
+    # Demo: do not decode every MRI sequence just to build a foreground mask.
+    if not _demo_mode():
+        for name in SEQUENCE_ORDER:
+            try:
+                volume, _ = _cached_volume(app, case_id, name)
+            except (FileNotFoundError, ValueError):
+                continue
+            if volume.shape == fg.shape:
+                fg |= np.isfinite(volume) & (volume != 0)
     if not np.any(fg):
         fg = np.ones(fg.shape, dtype=bool)
     cache[key] = fg
