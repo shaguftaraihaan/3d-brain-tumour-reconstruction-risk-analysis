@@ -468,8 +468,12 @@ function applyDisabledUpload(message, { hideAdvanced = false, promoteCases = fal
   const advanced = document.querySelector("#advanced");
   const picker = document.querySelector("#case-picker");
   const heading = document.querySelector("#case-picker-heading");
+  const status = document.querySelector("#case-picker-status");
   const title = document.querySelector("#upload-screen-title");
   const lead = document.querySelector("#upload-screen-lead");
+  const privacy = document.querySelector("#privacy-note");
+  const localDetails = document.querySelector("#local-upload-details");
+  const localSummary = document.querySelector("#local-upload-summary");
   if (note) {
     note.hidden = false;
     note.textContent = message;
@@ -498,12 +502,19 @@ function applyDisabledUpload(message, { hideAdvanced = false, promoteCases = fal
     advanced.open = false;
   }
   if (promoteCases) {
+    if (privacy) privacy.hidden = true;
     if (picker) picker.classList.add("is-primary");
-    if (heading) heading.textContent = "Open a demo case";
+    if (heading) heading.hidden = true;
+    if (status) status.hidden = true;
     if (title) title.textContent = "Open a demo case";
     if (lead) {
       lead.textContent = "This public demo ships three finished BraTS reconstructions. Pick one below to open the 3D viewer.";
     }
+    if (localDetails) {
+      localDetails.classList.add("is-static-collapsed");
+      localDetails.open = false;
+    }
+    if (localSummary) localSummary.hidden = false;
   }
   if (panelBtn) {
     panelBtn.disabled = true;

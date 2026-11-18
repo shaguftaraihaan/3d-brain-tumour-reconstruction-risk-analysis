@@ -108,6 +108,11 @@ def test_static_demo_real_chrome_per_case():
         page.wait_for_selector("#demo-note:not([hidden])", timeout=30000)
         page.wait_for_selector("#case-list button", timeout=30000)
         assert page.locator("#case-picker").evaluate("el => el.classList.contains('is-primary')")
+        assert page.locator("#upload-screen-title").inner_text() == "Open a demo case"
+        assert page.locator("#privacy-note").is_hidden()
+        assert page.locator("#local-upload-details").evaluate("el => !el.open")
+        assert page.locator("#local-upload-summary").is_visible()
+        assert "local only" in page.locator("#local-upload-summary").inner_text().lower()
         assert page.locator("#pick-folder").is_disabled()
         assert page.locator("#pick-files").is_disabled()
         assert page.locator("#upload-submit").is_disabled()
@@ -115,6 +120,18 @@ def test_static_demo_real_chrome_per_case():
         assert page.locator("#advanced").is_hidden()
         note = page.locator("#demo-note").inner_text()
         assert "trained model" in note and "3 BraTS example cases" in note
+        # Order: title → lead → cases → upload-unavailable note → collapsed local upload.
+        order = page.evaluate(
+            """() => {
+              const ids = ['upload-screen-title', 'upload-screen-lead', 'case-picker', 'demo-note', 'local-upload-details'];
+              return ids.map((id) => {
+                const el = document.getElementById(id);
+                return el ? el.getBoundingClientRect().top : null;
+              });
+            }"""
+        )
+        assert all(value is not None for value in order), order
+        assert order == sorted(order), order
         before = page.url
         page.evaluate(
             """() => {
