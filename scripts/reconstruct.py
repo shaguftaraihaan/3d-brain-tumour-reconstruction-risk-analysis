@@ -21,15 +21,14 @@ from recon.scene import build_scene, default_output_root  # noqa: E402
 
 
 def default_checkpoint() -> Path:
-    """First existing checkpoint: ``BRATS_CHECKPOINT``, the repo, then the smoke run."""
+    """First existing checkpoint: ``BRATS_CHECKPOINT``, the repo, then local MRI v3."""
+    from recon.infer import checkpoint_candidates
+
     candidates = []
     env = os.environ.get("BRATS_CHECKPOINT")
     if env:
         candidates.append(Path(env))
-    candidates.append(ROOT / "models" / "best_model.pt")
-    candidates.append(
-        Path.home() / "Desktop" / "MRI project" / "models" / "checkpoints" / "brats_pretrain_smoke" / "best_model.pt"
-    )
+    candidates.extend(checkpoint_candidates())
     for path in candidates:
         if path.is_file():
             return path

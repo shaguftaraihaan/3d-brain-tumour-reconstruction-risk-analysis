@@ -32,7 +32,31 @@ CHANNEL_ORDER = ("ET", "TC", "WT")
 ABHINAV_CHANNEL_ORDER = ("ET", "TC", "WT")
 ABHINAV_ROI = (96, 96, 96)
 ABHINAV_MODALITIES = ("FLAIR", "T1", "T1c", "T2")
-ABHINAV_CHECKPOINT = Path(__file__).resolve().parents[1] / "checkpoints" / "brats_scale_full" / "best_model.pt"
+_ROOT = Path(__file__).resolve().parents[1]
+ABHINAV_CHECKPOINT = _ROOT / "checkpoints" / "brats_scale_full" / "best_model.pt"
+
+
+def abhinav_checkpoint_candidates() -> list[Path]:
+    """v3 SegResNet weights: this repo, then the sibling MRI training run."""
+    return [
+        ABHINAV_CHECKPOINT,
+        Path.home() / "MRI" / "checkpoints" / "brats_scale_full" / "best_model.pt",
+    ]
+
+
+def checkpoint_candidates() -> list[Path]:
+    """Places to look for SegResNet weights (repo copy, then local MRI v3)."""
+    return [
+        _ROOT / "models" / "best_model.pt",
+        *abhinav_checkpoint_candidates(),
+        Path.home()
+        / "Desktop"
+        / "MRI project"
+        / "models"
+        / "checkpoints"
+        / "brats_pretrain_smoke"
+        / "best_model.pt",
+    ]
 
 _OVERLAP = 0.625
 _SW_BATCH_SIZE = 2
@@ -95,10 +119,11 @@ def resolve_checkpoint(name: str, explicit=None) -> Path:
         return Path(explicit)
     if model_name(name) != ABHINAV_V3:
         raise ValueError("Pass a checkpoint path for the local SegResNet")
-    path = ABHINAV_CHECKPOINT
-    if not path.is_file():
-        raise FileNotFoundError(f"No abhinav_v3 checkpoint at {path}")
-    return path
+    for path in abhinav_checkpoint_candidates():
+        if path.is_file():
+            return path
+    lines = "\n".join(f"  {path}" for path in abhinav_checkpoint_candidates())
+    raise FileNotFoundError(f"No abhinav_v3 checkpoint found. Looked in:\n{lines}")
 
 
 def load_model(ckpt_path, device, name: str = OURS) -> SegResNet:
