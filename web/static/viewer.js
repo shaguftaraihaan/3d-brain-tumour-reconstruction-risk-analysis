@@ -24,7 +24,7 @@ import {
   wireAcsStrip,
   wireReportLink,
   worldToVoxel,
-} from "./explorer-ui.js?v=explorer4";
+} from "./explorer-ui.js?v=explorer6";
 
 const AXIS_NAME = ["Sagittal", "Coronal", "Axial"];
 const TUMOR_ORDER = ["enhancing", "necrosis", "edema"];
@@ -432,18 +432,49 @@ async function loadCapabilities() {
   const note = document.querySelector("#demo-note");
   const block = document.querySelector("#upload-block");
   const submit = document.querySelector("#upload-submit");
+  const panelBtn = document.querySelector("#upload-scan-btn");
+  const panelNote = document.querySelector("#upload-panel-note");
   try {
     const caps = await fetch("/api/capabilities").then(readJson);
-    if (caps.upload) return;
     const message = caps.message || "Upload and inference are not available in this demo.";
-    if (note) {
-      note.hidden = false;
-      note.textContent = message;
+    // Always keep Upload scan visible. Demo mode: disabled with explanation.
+    if (!caps.upload) {
+      if (note) {
+        note.hidden = false;
+        note.textContent = message;
+      }
+      if (block) {
+        block.hidden = false;
+        block.classList.add("is-disabled");
+        block.querySelectorAll("input,button").forEach((el) => {
+          el.disabled = true;
+        });
+      }
+      if (submit) submit.disabled = true;
+      if (panelBtn) {
+        panelBtn.disabled = true;
+        panelBtn.title = message;
+        panelBtn.textContent = "Upload scan (unavailable in this demo)";
+      }
+      if (panelNote) panelNote.textContent = message;
+      return;
     }
-    if (block) block.hidden = true;
-    if (submit) submit.disabled = true;
+    if (panelBtn) {
+      panelBtn.disabled = false;
+      panelBtn.title = "";
+      panelBtn.textContent = "Upload scan";
+      panelBtn.onclick = () => {
+        uploadScreen.hidden = false;
+        viewerRoot.hidden = true;
+        window.scrollTo(0, 0);
+      };
+    }
+    if (panelNote) {
+      panelNote.textContent = "Add FLAIR, T1, T1c and T2 (or a zip of those files) to build a new case.";
+    }
   } catch (_error) {
     // Keep the upload UI visible if the capabilities endpoint is unavailable.
+    if (panelBtn) panelBtn.disabled = false;
   }
 }
 
@@ -541,6 +572,26 @@ async function startViewer(id) {
   renderer.localClippingEnabled = true;
   renderer.autoClear = false;
   renderer.sortObjects = true;
+  let glassBroken = false;
+  let glassMeshes = null;
+  const reportGlassFailure = (detail) => {
+    if (glassBroken) return;
+    glassBroken = true;
+    (glassMeshes || []).forEach((mesh) => {
+      if (!mesh.userData.glass) return;
+      const opacity = mesh.userData.baseOpacity ?? 0.7;
+      const color = mesh.material?.uniforms?.baseColor?.value || GLASS_COLOR;
+      mesh.material = glassFallbackMaterial(opacity, color);
+      mesh.material.clippingPlanes = [];
+    });
+    showPanelState(
+      "#view-state",
+      "error",
+      `3D glass shader failed on this GPU; showing a solid fallback. ${String(detail).slice(0, 180)}`,
+      () => startViewer(id),
+    );
+  };
+  installShaderErrorWatch(renderer, reportGlassFailure);
   const labelRenderer = new CSS2DRenderer();
   labelRenderer.domElement.className = "label-layer";
   const viewWrap = document.querySelector("#view-wrap") || viewerRoot;
@@ -569,7 +620,7 @@ async function startViewer(id) {
   let gltf;
   try {
     gltf = await new GLTFLoader().loadAsync(
-      `/api/cases/${encodeURIComponent(id)}/scene.glb?v=explorer4`,
+      `/api/cases/${encodeURIComponent(id)}/scene.glb?v=explorer6`,
     );
   } catch (error) {
     showPanelState("#view-state", "error", `Could not load 3D scene: ${error.message || error}`, () => {
@@ -606,6 +657,32 @@ async function startViewer(id) {
     pickable.push(object);
     byName.set(name, object);
   });
+  glassMeshes = [...byName.values()];
+  const failedMeshes = [];
+  byName.forEach((mesh, name) => {
+    const pos = mesh.geometry?.attributes?.position;
+    const verts = pos ? pos.count : 0;
+    const sphere = mesh.geometry?.boundingSphere;
+    if (verts < 24 || !sphere || !(sphere.radius > 1e-3)) {
+      failedMeshes.push(name);
+      mesh.visible = false;
+    }
+  });
+  if (failedMeshes.length || byName.size === 0) {
+    showPanelState(
+      "#view-state",
+      "error",
+      byName.size === 0
+        ? "3D scene loaded but contained no structure meshes. Try Reload."
+        : `3D mesh failed to load (${failedMeshes.join(", ")}). Try Reload.`,
+      () => startViewer(id),
+    );
+  }
+  try {
+    renderer.compile(gltf.scene, camera);
+  } catch (error) {
+    reportGlassFailure(error);
+  }
   const labels = attachLabels(scene, byName, manifest);
 
   let volume;
@@ -918,24 +995,59 @@ async function startViewer(id) {
   frameTumorView(camera, controls, byName);
   window.__viewerDiagnostics = () => {
     const meshes = [];
+    const sliceInfo = sliceMeshes.map((group, axis) => {
+      const mri = group.userData.mri;
+      const pos = mri?.geometry?.attributes?.position;
+      return {
+        axis,
+        visible: group.visible,
+        verts: pos ? pos.count : 0,
+        hasMap: Boolean(mri?.material?.map),
+        material: mri?.material?.type || null,
+      };
+    });
     byName.forEach((mesh, name) => {
       const box = mesh.geometry?.boundingBox;
       const sphere = mesh.geometry?.boundingSphere;
       const size = box ? box.getSize(new THREE.Vector3()) : null;
+      const pos = mesh.geometry?.attributes?.position;
+      const idx = mesh.geometry?.index;
+      const verts = pos ? pos.count : 0;
       meshes.push({
         name,
         visible: mesh.visible,
         glass: Boolean(mesh.userData.glass),
-        tris: mesh.geometry?.index ? mesh.geometry.index.count / 3 : (mesh.geometry?.attributes?.position?.count || 0) / 3,
+        verts,
+        indices: idx ? idx.count : 0,
+        tris: idx ? idx.count / 3 : verts / 3,
+        material: mesh.material?.type || null,
+        vertexColors: Boolean(mesh.material?.vertexColors),
+        uniforms: mesh.material?.uniforms ? Object.keys(mesh.material.uniforms) : [],
         size: size ? [size.x, size.y, size.z] : null,
         radius: sphere ? sphere.radius : null,
-        degenerate: !sphere || !(sphere.radius > 1e-3) || !size || !(size.x + size.y + size.z > 1e-3),
+        tooFewVerts: verts > 0 && verts < 24,
+        degenerate: !sphere || !(sphere.radius > 1e-3) || !size || !(size.x + size.y + size.z > 1e-3) || (verts > 0 && verts < 24),
       });
     });
+    const bad = meshes.filter((m) => m.visible && (m.degenerate || m.tooFewVerts));
+    if (bad.length) {
+      showPanelState(
+        "#view-state",
+        "error",
+        `3D mesh failed to load (${bad.map((m) => m.name).join(", ")}). Try Reload.`,
+        () => startViewer(id),
+      );
+    }
     return {
       acsPainted: acsStripIsPainted(),
+      glassBroken,
+      glbOk: meshes.length > 0 && meshes.every((m) => m.verts >= 24),
+      glbMeshCount: meshes.length,
+      glbParsedFully: Boolean(gltf?.scene) && meshes.length > 0 && failedMeshes.length === 0,
+      failedMeshes,
+      slices: sliceInfo,
       meshes,
-      degenerateVisible: meshes.filter((m) => m.visible && m.degenerate).map((m) => m.name),
+      degenerateVisible: bad.map((m) => m.name),
     };
   };
   const markReady = () => {
@@ -1198,9 +1310,9 @@ function orientNormals(geometry) {
 }
 
 function glassMaterial(object, opacity, baseColor) {
-  const hasColor = Boolean(object.geometry?.getAttribute("color"));
-  // Custom shaders must declare color when vertexColors is on; otherwise real
-  // Metal/ANGLE drivers can link a broken program and draw a single bright face.
+  // Do NOT set vertexColors / redeclare `color`. Three.js injects
+  // `attribute vec4 color` when vertexColors is true; a manual vec3
+  // redefinition fails to compile on real Chrome/Metal and leaves a white fallback face.
   return new THREE.ShaderMaterial({
     uniforms: {
       baseColor: { value: (baseColor || GLASS_COLOR).clone() },
@@ -1209,22 +1321,13 @@ function glassMaterial(object, opacity, baseColor) {
       tintMix: { value: 0 },
     },
     vertexShader: `
-      #include <common>
       #include <clipping_planes_pars_vertex>
-      #ifdef USE_COLOR
-      attribute vec3 color;
-      #endif
       varying vec3 vNormal;
       varying vec3 vViewDir;
-      varying vec3 vLobe;
       void main() {
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         vNormal = normalize(normalMatrix * normal);
         vViewDir = normalize(-mvPosition.xyz);
-        vLobe = vec3(1.0);
-        #ifdef USE_COLOR
-        vLobe = color;
-        #endif
         gl_Position = projectionMatrix * mvPosition;
         #include <clipping_planes_vertex>
       }
@@ -1238,7 +1341,6 @@ function glassMaterial(object, opacity, baseColor) {
       uniform float tintMix;
       varying vec3 vNormal;
       varying vec3 vViewDir;
-      varying vec3 vLobe;
       void main() {
         #include <clipping_planes_fragment>
         vec3 n = vNormal;
@@ -1246,8 +1348,7 @@ function glassMaterial(object, opacity, baseColor) {
         if (nLen < 1e-5) n = vec3(0.0, 0.0, 1.0);
         else n /= nLen;
         float fresnel = pow(1.0 - abs(dot(n, normalize(vViewDir))), 2.5);
-        vec3 base = mix(baseColor, vLobe, tintMix);
-        vec3 rgb = base * fresnel * intensity;
+        vec3 rgb = baseColor * fresnel * intensity;
         float alpha = clamp(fresnel * opacity, 0.0, 1.0);
         gl_FragColor = vec4(rgb, alpha);
         #include <tonemapping_fragment>
@@ -1259,8 +1360,41 @@ function glassMaterial(object, opacity, baseColor) {
     depthTest: true,
     side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
-    vertexColors: hasColor,
+    vertexColors: false,
     clipping: true,
+  });
+}
+
+function glassFallbackMaterial(opacity, baseColor) {
+  return new THREE.MeshPhysicalMaterial({
+    color: (baseColor || GLASS_COLOR).clone(),
+    roughness: 0.35,
+    transmission: 0.55,
+    thickness: 1.2,
+    transparent: true,
+    opacity: Math.min(Math.max(opacity, 0.15), 0.85),
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+
+function installShaderErrorWatch(renderer, onBroken) {
+  const canvas = renderer.domElement;
+  const gl = renderer.getContext();
+  if (!gl || typeof gl.getExtension !== "function") return;
+  const seen = new Set();
+  const original = console.error.bind(console);
+  console.error = (...args) => {
+    original(...args);
+    const text = args.map((part) => String(part)).join(" ");
+    if (!/Shader Error|VALIDATE_STATUS false|ShaderMaterial/i.test(text)) return;
+    if (seen.has(text.slice(0, 120))) return;
+    seen.add(text.slice(0, 120));
+    onBroken(text);
+  };
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    onBroken("WebGL context lost while drawing the 3D scene.");
   });
 }
 

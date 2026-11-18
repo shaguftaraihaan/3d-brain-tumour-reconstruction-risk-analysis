@@ -22,9 +22,12 @@ def test_acs_helpers_and_cache_bust_are_wired():
     app = (ROOT / "web" / "app.py").read_text(encoding="utf-8")
     assert "acsStripIsPainted" in explorer and "acsStripIsPainted" in viewer
     assert "crossOrigin = \"anonymous\"" not in explorer.split("function loadImage")[1].split("export function")[0]
-    assert "attribute vec3 color" in viewer
-    assert "viewer.js?v=explorer4" in html
-    assert "explorer-ui.js?v=explorer4" in viewer
+    assert "attribute vec3 color" not in viewer
+    assert "vertexColors: false" in viewer
+    assert "glassFallbackMaterial" in viewer
+    assert "viewer.js?v=explorer6" in html
+    assert "explorer-ui.js?v=explorer6" in viewer
+    assert 'id="upload-panel"' in html
     assert "no-cache, must-revalidate" in app
     assert "_VOLUME_CACHE_LOCK" in app
 
@@ -61,12 +64,23 @@ def test_live_viewer_acs_and_mesh_bounds_real_or_headless():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=not headed, **launch_args)
         page = browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=2)
+        errors: list[str] = []
+        page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
         page.goto(f"{base}/viewer?case=BraTS20_Training_002", wait_until="domcontentloaded", timeout=180000)
         page.wait_for_function("window.__viewerReady === true", timeout=180000)
         page.wait_for_timeout(1500)
         page.wait_for_function("window.__acsPainted === true", timeout=30000)
+        page.wait_for_timeout(500)
         diag = page.evaluate("() => window.__viewerDiagnostics ? window.__viewerDiagnostics() : null")
         assert diag, "viewer diagnostics missing"
         assert diag["acsPainted"] is True, diag
+        assert diag.get("glbOk") is True, diag
         assert not diag["degenerateVisible"], f"degenerate visible meshes: {diag['degenerateVisible']}"
+        for mesh in diag["meshes"]:
+            if mesh["visible"]:
+                assert mesh["verts"] >= 24, mesh
+        shader_errors = [text for text in errors if "Shader Error" in text or "VALIDATE_STATUS false" in text]
+        assert not shader_errors, shader_errors
+        upload = page.locator("#upload-scan-btn")
+        assert upload.count() == 1
         browser.close()

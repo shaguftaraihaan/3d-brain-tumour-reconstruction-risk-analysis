@@ -1,0 +1,330 @@
+{
+  "acsPainted": true,
+  "glassBroken": false,
+  "glbOk": true,
+  "glbMeshCount": 14,
+  "glbParsedFully": true,
+  "failedMeshes": [],
+  "slices": [
+    {
+      "axis": 0,
+      "visible": false,
+      "verts": 4,
+      "hasMap": false,
+      "material": "MeshBasicMaterial"
+    },
+    {
+      "axis": 1,
+      "visible": false,
+      "verts": 4,
+      "hasMap": false,
+      "material": "MeshBasicMaterial"
+    },
+    {
+      "axis": 2,
+      "visible": false,
+      "verts": 4,
+      "hasMap": false,
+      "material": "MeshBasicMaterial"
+    }
+  ],
+  "meshes": [
+    {
+      "name": "edema",
+      "visible": true,
+      "glass": false,
+      "verts": 19084,
+      "indices": 114504,
+      "tris": 38168,
+      "material": "MeshPhysicalMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        55.45772171020508,
+        66.66085052490234,
+        52.73689270019531
+      ],
+      "radius": 36.19138572157979,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "necrosis",
+      "visible": true,
+      "glass": false,
+      "verts": 8434,
+      "indices": 47016,
+      "tris": 15672,
+      "material": "MeshPhysicalMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        28.901107788085938,
+        37.268348693847656,
+        36.74565887451172
+      ],
+      "radius": 21.016615751008942,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "enhancing",
+      "visible": true,
+      "glass": false,
+      "verts": 8106,
+      "indices": 48612,
+      "tris": 16204,
+      "material": "MeshPhysicalMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        31.213531494140625,
+        38.49120330810547,
+        35.66685104370117
+      ],
+      "radius": 21.533276838029003,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Left Cortex",
+      "visible": true,
+      "glass": true,
+      "verts": 149574,
+      "indices": 900000,
+      "tris": 300000,
+      "material": "ShaderMaterial",
+      "vertexColors": false,
+      "uniforms": [
+        "baseColor",
+        "opacity",
+        "intensity",
+        "tintMix",
+        "clippingPlanes"
+      ],
+      "size": [
+        76.19841766357422,
+        181.97931671142578,
+        111.58431816101074
+      ],
+      "radius": 94.99032855654661,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Right Cortex",
+      "visible": true,
+      "glass": true,
+      "verts": 149624,
+      "indices": 900000,
+      "tris": 300000,
+      "material": "ShaderMaterial",
+      "vertexColors": false,
+      "uniforms": [
+        "baseColor",
+        "opacity",
+        "intensity",
+        "tintMix",
+        "clippingPlanes"
+      ],
+      "size": [
+        77.27549743652344,
+        182.34343147277832,
+        111.72156143188477
+      ],
+      "radius": 93.8912524792326,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "White Matter",
+      "visible": false,
+      "glass": true,
+      "verts": 99898,
+      "indices": 600000,
+      "tris": 200000,
+      "material": "ShaderMaterial",
+      "vertexColors": false,
+      "uniforms": [
+        "baseColor",
+        "opacity",
+        "intensity",
+        "tintMix",
+        "clippingPlanes"
+      ],
+      "size": [
+        122.9604263305664,
+        172.57950592041016,
+        103.89762687683105
+      ],
+      "radius": 89.40670563313219,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Left Cerebellar Cortex",
+      "visible": true,
+      "glass": true,
+      "verts": 19508,
+      "indices": 116928,
+      "tris": 38976,
+      "material": "ShaderMaterial",
+      "vertexColors": false,
+      "uniforms": [
+        "baseColor",
+        "opacity",
+        "intensity",
+        "tintMix",
+        "clippingPlanes"
+      ],
+      "size": [
+        50.430992126464844,
+        72.30411148071289,
+        55.693115234375
+      ],
+      "radius": 44.79023143875324,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Right Cerebellar Cortex",
+      "visible": true,
+      "glass": true,
+      "verts": 18633,
+      "indices": 111714,
+      "tris": 37238,
+      "material": "ShaderMaterial",
+      "vertexColors": false,
+      "uniforms": [
+        "baseColor",
+        "opacity",
+        "intensity",
+        "tintMix",
+        "clippingPlanes"
+      ],
+      "size": [
+        51.030113220214844,
+        72.43717193603516,
+        55.589420318603516
+      ],
+      "radius": 45.28689799055386,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Left Thalamus",
+      "visible": false,
+      "glass": false,
+      "verts": 3880,
+      "indices": 23268,
+      "tris": 7756,
+      "material": "MeshStandardMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        23.13921356201172,
+        32.93711853027344,
+        27.917404174804688
+      ],
+      "radius": 17.69500313372441,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Left Caudate",
+      "visible": false,
+      "glass": false,
+      "verts": 4052,
+      "indices": 24300,
+      "tris": 8100,
+      "material": "MeshStandardMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        17.00328826904297,
+        36.808258056640625,
+        45.30400085449219
+      ],
+      "radius": 24.589266944048067,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Left Putamen",
+      "visible": false,
+      "glass": false,
+      "verts": 2366,
+      "indices": 14172,
+      "tris": 4724,
+      "material": "MeshStandardMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        16.78167724609375,
+        27.47662353515625,
+        33.31605911254883
+      ],
+      "radius": 21.47377719329325,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Right Thalamus",
+      "visible": false,
+      "glass": false,
+      "verts": 3758,
+      "indices": 22536,
+      "tris": 7512,
+      "material": "MeshStandardMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        22.904647827148438,
+        33.47540283203125,
+        26.49905776977539
+      ],
+      "radius": 17.413411435853373,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Right Caudate",
+      "visible": false,
+      "glass": false,
+      "verts": 3916,
+      "indices": 23484,
+      "tris": 7828,
+      "material": "MeshStandardMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        17.0662841796875,
+        34.70171356201172,
+        44.377174377441406
+      ],
+      "radius": 24.192012687687356,
+      "tooFewVerts": false,
+      "degenerate": false
+    },
+    {
+      "name": "Right Putamen",
+      "visible": false,
+      "glass": false,
+      "verts": 3596,
+      "indices": 21564,
+      "tris": 7188,
+      "material": "MeshStandardMaterial",
+      "vertexColors": false,
+      "uniforms": [],
+      "size": [
+        20.366897583007812,
+        32.86018371582031,
+        32.67403030395508
+      ],
+      "radius": 19.7843758174195,
+      "tooFewVerts": false,
+      "degenerate": false
+    }
+  ],
+  "degenerateVisible": []
+}
