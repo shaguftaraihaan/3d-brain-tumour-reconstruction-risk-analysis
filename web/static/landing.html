@@ -3,21 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Tumor in context: a brain MRI research viewer</title>
-  <meta name="description" content="Upload four MRI sequences and see the tumor in 3D with its volume, location and how far each number can be trusted. A research prototype.">
+  <title>CerebraVision: a brain MRI research viewer</title>
+  <meta name="description" content="See a brain tumor in 3D with its volume, location and how far each number can be trusted. A research prototype using public BraTS demo cases.">
+  <link rel="icon" type="image/png" href="/static/favicon.png">
   <link rel="stylesheet" href="/static/landing.css">
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
 </head>
 <body class="intro-on">
-  <div class="intro" aria-hidden="true"><span class="intro-word">Tumor in context</span><div class="intro-line"></div></div>
+  <p class="research-banner" role="note">Research prototype, not for diagnosis</p>
+  <div class="intro" aria-hidden="true"><span class="intro-word">CerebraVision</span><div class="intro-line"></div></div>
   <header class="nav" id="top">
-    <a class="brand" href="#top" aria-label="Tumor in context, home">
+    <a class="brand" href="#top" aria-label="CerebraVision, home">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span>Tumor in context</span>
+      <span>CerebraVision</span>
     </a>
     <nav aria-label="Main">
       <a href="#features">Features</a>
-      <a href="#how">How it works</a>
+      <a href="#demo-cases">Demo cases</a>
       <a href="#limits">Limits</a>
       <a class="btn btn-small" href="/viewer">Open the viewer</a>
     </nav>
@@ -28,10 +30,10 @@
       <div class="hero-copy">
         <p class="eyebrow">Brain tumor MRI &middot; research prototype</p>
         <h1>See the tumor <em>in the context</em> of the brain.</h1>
-        <p class="lede">Add four MRI sequences. Get a 3D model of the tumor, its volume in millilitres, where it sits, and an honest note on how far each number can be trusted.</p>
+        <p class="lede">Open a public BraTS demo case. Get a 3D model of the tumor, its volume in millilitres, where it sits, and an honest note on how far each number can be trusted.</p>
         <div class="cta-row">
           <a class="btn" href="/viewer">Open the viewer</a>
-          <a class="btn btn-ghost" href="#how">See how it works</a>
+          <a class="btn btn-ghost" href="#demo-cases">Try a demo case</a>
         </div>
       </div>
       <div class="hero-stage">
@@ -72,7 +74,7 @@
         </article>
         <article class="card">
           <h3>An uncertainty view</h3>
-          <p>Switch from the mask to the model's probability map. Soft edges show where the model hesitates, instead of hiding it behind one sharp outline.</p>
+          <p>Compare the model mask with an expert second mask when available, and read Dice scores for whole tumor, core and enhancing regions.</p>
         </article>
         <article class="card">
           <h3>Trust badges</h3>
@@ -85,34 +87,44 @@
       </div>
     </section>
 
-    <section class="section alt" id="how">
-      <h2>From scan to answer in five steps</h2>
-      <ol class="steps">
-        <li><span class="num">1</span><div><h3>Read the scan</h3><p>The four sequences are recognised from their file names, so you do not need to say which is which.</p></div></li>
-        <li><span class="num">2</span><div><h3>Remove the skull</h3><p>HD-BET isolates the brain so the model only sees brain tissue.</p></div></li>
-        <li><span class="num">3</span><div><h3>Segment the tumor</h3><p>A 3D neural network trained on the public BraTS dataset outlines the tumor regions.</p></div></li>
-        <li><span class="num">4</span><div><h3>Measure</h3><p>Volumes are computed in millilitres and checked against the smallest tumor in the training data.</p></div></li>
-        <li><span class="num">5</span><div><h3>Locate, if it can be trusted</h3><p>The brain is matched to a standard atlas. If the match is poor, the viewer says so and does not guess.</p></div></li>
-      </ol>
-    </section>
-
-    <section class="section" id="limits">
-      <h2>What this is not</h2>
-      <div class="limits">
-        <p><strong>Not a diagnosis.</strong> It is a student research prototype and must not be used to make medical decisions.</p>
-        <p><strong>Tested on BraTS, not on patients.</strong> Accuracy is measured on public BraTS cases that have expert outlines. On real scans without expert outlines, every result is a model estimate and is marked unverified.</p>
-        <p><strong>Location can be withheld.</strong> A poor atlas match, a tiny volume or a fragmented tumor all stop the viewer from naming a lobe.</p>
-        <p><strong>Demo data.</strong> The hosted demo opens public BraTS cases only (for example BraTS20_Training_002). It is not linked to any hospital or patient record.</p>
+    <section class="section alt" id="demo-cases">
+      <h2>Try a public BraTS demo case</h2>
+      <p class="section-lede">Three finished reconstructions ship with this static demo. Upload of your own scan needs the trained model and a local run.</p>
+      <div class="grid demo-grid">
+        <a class="card demo-card" href="/viewer?case=BraTS20_Training_002">
+          <h3>BraTS20_Training_002</h3>
+          <p>Clear enhancing core with surrounding edema. Good starting case for the glass + tumor view.</p>
+          <span class="demo-link">Open case →</span>
+        </a>
+        <a class="card demo-card" href="/viewer?case=BraTS20_Training_004">
+          <h3>BraTS20_Training_004</h3>
+          <p>Larger whole-tumor volume. Useful for checking linked ACS slices and the second-mask Dice.</p>
+          <span class="demo-link">Open case →</span>
+        </a>
+        <a class="card demo-card" href="/viewer?case=BraTS20_Training_022">
+          <h3>BraTS20_Training_022</h3>
+          <p>Distinct enhancing tumor. Compare model and expert overlays side by side.</p>
+          <span class="demo-link">Open case →</span>
+        </a>
       </div>
       <div class="cta-row center">
         <a class="btn" href="/viewer">Open the viewer</a>
       </div>
     </section>
+
+    <section class="section" id="limits">
+      <h2>What this is not</h2>
+      <div class="limits">
+        <p><strong>Not a diagnosis.</strong> It is a research prototype and must not be used to make medical decisions.</p>
+        <p><strong>Tested on BraTS, not on patients.</strong> Accuracy is measured on public BraTS cases that have expert outlines. On real scans without expert outlines, every result is a model estimate and is marked unverified.</p>
+        <p><strong>Location can be withheld.</strong> A poor atlas match, a tiny volume or a fragmented tumor all stop the viewer from naming a lobe.</p>
+      </div>
+    </section>
   </main>
 
   <footer class="footer">
-    <p>Capstone project &middot; Vellore Institute of Technology (Andhra Pradesh)</p>
-    <p class="small">Built with MONAI, HD-BET, three.js and nilearn. Data and atlases: BraTS, MNI152 / ICBM and Harvard-Oxford, used for academic research and cited in the project report. BraTS credit: Multimodal Brain Tumor Segmentation Challenge (BraTS); demo cases are public BraTS training data.</p>
+    <p>Research prototype, not for diagnosis. Demo cases from the public BraTS dataset.</p>
+    <p class="small">Check the BraTS data terms before publishing a hosted copy. Capstone project · Vellore Institute of Technology (Andhra Pradesh).</p>
   </footer>
   <script type="module" src="/static/hero.js"></script>
 </body>

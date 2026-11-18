@@ -460,7 +460,7 @@ async function populateStaticCaseSwitcher() {
       button.textContent = id;
       if (id === caseId) button.classList.add("is-active");
       button.addEventListener("click", () => {
-        location.href = `./index.html?case=${encodeURIComponent(id)}`;
+        location.href = `./explorer.html?case=${encodeURIComponent(id)}`;
       });
       item.appendChild(button);
       list.appendChild(item);
@@ -494,7 +494,7 @@ async function loadCasePicker() {
       button.textContent = id;
       button.addEventListener("click", () => {
         const next = isStaticDemo()
-          ? `./index.html?case=${encodeURIComponent(id)}`
+          ? `./explorer.html?case=${encodeURIComponent(id)}`
           : `/viewer?case=${encodeURIComponent(id)}`;
         location.href = next;
       });
@@ -509,6 +509,8 @@ async function loadCasePicker() {
 async function loadCapabilities() {
   const panelBtn = document.querySelector("#upload-scan-btn");
   const panelNote = document.querySelector("#upload-panel-note");
+  const home = document.querySelector("#home-link");
+  if (home) home.href = isStaticDemo() ? "./index.html" : "/";
   if (isStaticDemo()) {
     applyDisabledUpload("Upload scan needs the trained model. Run locally to analyse your own scan.");
     disableStaticOnlyControls();

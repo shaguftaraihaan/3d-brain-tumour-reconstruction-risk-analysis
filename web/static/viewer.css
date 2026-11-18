@@ -312,6 +312,26 @@ kbd {
   border-left: 1px solid var(--border);
 }
 
+.panel-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.home-link {
+  color: #9eb6d8;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.home-link:hover,
+.home-link:focus-visible {
+  color: #e8eef8;
+  text-decoration: underline;
+}
+
 #slices-panel {
   grid-area: slices;
   border-right: 1px solid var(--border);
