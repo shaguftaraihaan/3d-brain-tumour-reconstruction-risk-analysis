@@ -156,11 +156,19 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "Hovered only" in html and 'id="label-mode"' in html
     assert 'id="screenshot"' in html
     assert "Tumor" in script and "Anatomy" in script and "Tracts" in script
-    assert "Tumor focus" in script and "Tumor + Tracts" in script
+    assert "Tumor focus" in script
+    assert "Tumor + Tracts" not in script and "tumor-tracts" not in script
+    assert '{ id: "anatomy"' not in script
     assert "Glass + tumor" in script
     assert 'name="anatomy" type="checkbox" checked' in html
     assert "enabled: false" in script
     assert "applyPreset(\"glass-tumor\"" in script
+    assert "view-wrap" in script and "clientWidth" in script
+    assert "acs-error" in explorer
+    assert "Needs the model, not available in this demo" in explorer
+    assert "/report.html" in explorer
+    assert 'data-unc="second"' in html and 'data-unc="prob"' in html
+    assert 'id="uncertainty-legend"' in html
     assert "volumeBox" in script
     assert "depthWrite" in script
     assert "enhancing" in script and "renderOrder" in script
@@ -177,17 +185,17 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'id="auto-rotate"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
-    assert b"viewer.js?v=explorer1" in page.data
+    assert b"viewer.js?v=explorer3" in page.data
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
     assert "Cortical grey matter (left)" in script
     assert "Grey matter total" in script or "structureLabel" in script
-    assert b'data-edge="top"' in page.data
     assert "ORIENT_LETTERS" in script
     assert "renderOrientationGizmo" in script
     assert "sliceTextureCorners" in script
     assert "orient_ras_slice" not in script
     assert b'id="slices-panel"' in page.data
+    assert b'id="acs-strip"' in page.data
     assert b'id="slice-grid"' in page.data
     assert b'value="t1"' in page.data
     assert b'value="t2"' in page.data
@@ -200,6 +208,9 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "color-scheme: dark" in css
     assert "--space: 8px" in css
     assert "IBM Plex Sans" in css
+    assert "slices view panel" in css and "--slices-width" in css
+    assert "@media (max-width: 900px)" in css
+
     assert "setClearColor(0x0b0f17)" in script
     assert "orientNormals" in script
     assert "structureName" in script
@@ -481,6 +492,9 @@ def test_location_uncertainty_and_report_endpoints(tmp_path=None):
     assert uncertainty.json["has_prob"] is True
     assert set(uncertainty.json["dice"]) == {"wt", "tc", "et"}
     assert 0.0 <= uncertainty.json["dice"]["wt"] <= 1.0
+    reasons = uncertainty.json.get("reasons") or {}
+    assert reasons.get("prob") is None  # demo fixture has wt_prob
+    assert reasons.get("second") is None
 
     model = client.get("/api/cases/demo/overlay?source=model&axis=2&index=3")
     second_png = client.get("/api/cases/demo/overlay?source=second&axis=2&index=3")
@@ -488,13 +502,32 @@ def test_location_uncertainty_and_report_endpoints(tmp_path=None):
     assert model.status_code == 200 and model.mimetype == "image/png"
     assert second_png.status_code == 200 and second_png.mimetype == "image/png"
     assert heat.status_code == 200 and heat.mimetype == "image/png"
+    assert model.data != second_png.data
     assert client.get("/api/cases/demo/overlay?source=nope").status_code == 400
 
-    report = client.get("/api/cases/demo/report.pdf")
+    report = client.get("/api/cases/demo/report.html")
     assert report.status_code == 200
-    assert report.mimetype == "application/pdf"
-    assert report.data[:4] == b"%PDF"
-    assert b"demo" in report.headers.get("Content-Disposition", "").encode()
+    assert "text/html" in report.mimetype
+    body = report.data.decode("utf-8")
+    for heading in (
+        "Tumor in context, Research Imaging Summary",
+        "Study details",
+        "Technique",
+        "Findings",
+        "Measurements",
+        "Key images",
+        "Impression",
+        "Limitations and QC",
+        "Sign-off",
+        "NOT FOR DIAGNOSIS",
+    ):
+        assert heading in body
+    assert "not recorded" in body
+    # Legacy PDF path now serves the same HTML report.
+    legacy = client.get("/api/cases/demo/report.pdf")
+    assert legacy.status_code == 200
+    assert "text/html" in legacy.mimetype
+    assert "NOT FOR DIAGNOSIS" in legacy.data.decode("utf-8")
 
 
 def test_upload_rejects_mismatched_grid(tmp_path=None):
