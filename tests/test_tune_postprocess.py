@@ -134,9 +134,13 @@ def test_parallel_grid_matches_serial_and_edges_are_reported(tmp_path=None):
     assert [r["config"] for r in parallel] == configs
 
     top = max(tune.THRESHOLD_VALUES)
-    inside = tune._config(PostConfig(), {"ET": 0.7, "TC": 0.7, "WT": 0.7}, tune.MIN_COMPONENT_GRID[3])
+    inside = tune._config(
+        PostConfig(), {"ET": 0.5, "TC": 0.5, "WT": 0.5}, tune.MIN_COMPONENT_GRID[1]
+    )
     assert tune.grid_edges(inside) == []
-    edge = tune._config(PostConfig(), {"ET": top, "TC": 0.7, "WT": 0.7}, tune.MIN_COMPONENT_GRID[-1])
+    edge = tune._config(
+        PostConfig(), {"ET": top, "TC": 0.5, "WT": 0.5}, tune.MIN_COMPONENT_GRID[-1]
+    )
     edges = tune.grid_edges(edge)
     assert edges[0] == f"ET threshold {top:.2f}"
     assert edges[1].startswith("component sizes")
