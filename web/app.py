@@ -296,8 +296,9 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
             return jsonify({"error": "axis must be 0, 1, or 2"}), 400
         if index < 0 or index >= label.shape[axis]:
             return jsonify({"error": f"index {index} is outside axis {axis} (length {label.shape[axis]})"}), 400
-        tag = "overlay" if source == "model" else "overlay_second"
-        png = _cached_overlay_png(app, case_id, label, axis, index, tag=tag)
+        tag = "overlay" if source == "model" else "overlay_expert"
+        palette = "model" if source == "model" else "expert"
+        png = _cached_overlay_png(app, case_id, label, axis, index, tag=tag, palette=palette)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=120)
 
     @app.get("/api/cases/<case_id>/location.json")
@@ -333,12 +334,22 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
             except Exception as exc:  # noqa: BLE001 — surface as null, not 500
                 logger.warning("dice failed for %s: %s", case_id, exc)
                 dice = None
+        reasons = {
+            "model": None if has_model else "No model segmentation for this case.",
+            "second": None
+            if has_second
+            else "No expert ground-truth mask (seg.nii.gz) for this case.",
+            "prob": None
+            if has_prob
+            else "Needs the model, not available in this demo",
+        }
         return jsonify(
             {
                 "has_model": has_model,
                 "has_second": has_second,
                 "has_prob": has_prob,
                 "dice": dice,
+                "reasons": reasons,
                 "sources": {
                     "model": "pred_seg.nii.gz" if has_model else None,
                     "second": "seg.nii.gz" if has_second else None,
@@ -347,23 +358,19 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
             }
         )
 
+    @app.get("/api/cases/<case_id>/report")
+    @app.get("/api/cases/<case_id>/report.html")
     @app.get("/api/cases/<case_id>/report.pdf")
-    def report_pdf(case_id: str):
+    def report_html(case_id: str):
         try:
             case_id = _safe_case_id(case_id)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         try:
-            pdf = _build_report_pdf(app, case_id)
+            html = _build_report_html(app, case_id)
         except FileNotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
-        return send_file(
-            io.BytesIO(pdf),
-            mimetype="application/pdf",
-            as_attachment=True,
-            download_name=f"{case_id}_report.pdf",
-            max_age=0,
-        )
+        return Response(html, mimetype="text/html; charset=utf-8")
 
     return app
 
@@ -655,6 +662,13 @@ def _read_volume(app: Flask, case_id: str, modality: str):
     return data, np.asarray(image.affine, dtype=np.float64)
 
 
+def _evict_other_cases(cache: dict, case_id: str) -> None:
+    """Drop cached arrays for every case except ``case_id`` (demo RSS budget)."""
+    for existing in list(cache):
+        if isinstance(existing, tuple) and len(existing) >= 1 and existing[0] != case_id:
+            cache.pop(existing, None)
+
+
 def _cached_volume(app: Flask, case_id: str, modality: str):
     from recon.slices import resolve_sequence
 
@@ -662,7 +676,8 @@ def _cached_volume(app: Flask, case_id: str, modality: str):
     key = (case_id, suffix)
     cache = app.config["VOLUMES"]
     if key not in cache:
-        # Keep at most one MRI volume per case so free-tier RAM stays under 512 MB.
+        # One active case at a time, and at most one MRI volume for that case.
+        _evict_other_cases(cache, case_id)
         for existing in list(cache):
             if (
                 isinstance(existing, tuple)
@@ -680,6 +695,7 @@ def _cached_pred(app: Flask, case_id: str):
     cache = app.config["VOLUMES"]
     key = (case_id, "pred")
     if key not in cache:
+        _evict_other_cases(cache, case_id)
         path = _output_file(app, case_id, "pred_seg.nii.gz")
         image = nib.as_closest_canonical(nib.load(str(path)))
         data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
@@ -789,13 +805,13 @@ def _cached_slice_png(app, case_id, modality, data, axis, index, lo, hi, alpha=N
     return png
 
 
-def _cached_overlay_png(app, case_id, label, axis, index, *, tag: str = "overlay") -> bytes:
+def _cached_overlay_png(app, case_id, label, axis, index, *, tag: str = "overlay", palette: str = "model") -> bytes:
     from recon.slices import cache_path, render_overlay_png
 
     path = cache_path(_slice_cache_dir(app, case_id), tag, axis, index)
     if path.is_file():
         return path.read_bytes()
-    png = render_overlay_png(label, axis, index)
+    png = render_overlay_png(label, axis, index, palette=palette)
     path.write_bytes(png)
     return png
 
@@ -907,7 +923,7 @@ def _find_second_mask(app: Flask, case_id: str) -> Path | None:
         if not path.is_file():
             continue
         image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
         if np.any(data):
             return path
     return None
@@ -917,11 +933,12 @@ def _cached_second_mask(app: Flask, case_id: str):
     cache = app.config["VOLUMES"]
     key = (case_id, "second")
     if key not in cache:
+        _evict_other_cases(cache, case_id)
         path = _find_second_mask(app, case_id)
         if path is None:
             raise FileNotFoundError(f"No second mask for case {case_id}")
         image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.rint(np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))).astype(np.int16)
+        data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
         if data.ndim != 3:
             raise ValueError("second mask is not a 3D volume")
         cache[key] = data
@@ -932,6 +949,7 @@ def _cached_wt_prob(app: Flask, case_id: str):
     cache = app.config["VOLUMES"]
     key = (case_id, "wt_prob")
     if key not in cache:
+        _evict_other_cases(cache, case_id)
         path = _output_file(app, case_id, "wt_prob.nii.gz")
         image = nib.as_closest_canonical(nib.load(str(path)))
         data = np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))
@@ -957,58 +975,75 @@ def _mask_dice(app: Flask, case_id: str) -> dict:
     return out
 
 
-def _build_report_pdf(app: Flask, case_id: str) -> bytes:
-    """One-page PDF: volumes, three key views, QC badges, caveats."""
-    from PIL import ImageDraw, ImageFont
+def _build_report_html(app: Flask, case_id: str) -> str:
+    """Self-contained hospital-style HTML report (print to PDF from the browser)."""
+    import base64
+    import html as html_lib
+    from datetime import datetime, timezone
+
+    from recon.evaluate import regions_from_label
 
     manifest = _load_manifest(app, case_id)
     location = _build_location_report(app, case_id)
     volumes = location["volumes_ml"]
-    page = Image.new("RGB", (1240, 1754), (18, 22, 28))
-    draw = ImageDraw.Draw(page)
+    wt = float(volumes.get("wt_ml") or 0.0)
+    tc = float(volumes.get("tc_ml") or 0.0)
+    et = float(volumes.get("et_ml") or 0.0)
+    # Approximate edema / necrosis from exclusive compartment volumes when present.
+    edema = max(wt - tc, 0.0)
+    necrosis = max(tc - et, 0.0)
+    dice = None
     try:
-        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 36)
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
-        font_small = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 16)
-    except OSError:
-        font_title = ImageFont.load_default()
-        font = font_title
-        font_small = font_title
+        if _find_second_mask(app, case_id) is not None:
+            dice = _mask_dice(app, case_id)
+    except Exception:  # noqa: BLE001
+        dice = None
 
-    y = 48
-    draw.text((48, y), f"Case explorer report — {case_id}", fill=(236, 242, 248), font=font_title)
-    y += 56
-    draw.text((48, y), "Research prototype, not for diagnosis.", fill=(240, 180, 90), font=font)
-    y += 36
-    draw.text((48, y), "Model-estimated, unverified.", fill=(160, 176, 196), font=font_small)
-    y += 40
+    def pct(part: float) -> str:
+        if wt <= 0:
+            return "—"
+        return f"{100.0 * part / wt:.1f}%"
+
+    def esc(value) -> str:
+        return html_lib.escape(str(value if value is not None else "—"))
+
+    now = datetime.now(timezone.utc).astimezone()
+    stamp = now.strftime("%Y-%m-%d %H:%M %Z")
+    report_id = f"TIC-{case_id}-{now.strftime('%Y%m%d%H%M')}"
     qc = location["qc"]["status"]
-    floor = "passed" if location["plausibility"]["passed"] else "below floor"
-    draw.text((48, y), f"Registration QC: {qc}    Plausibility: {floor}", fill=(200, 214, 230), font=font)
-    y += 40
-    draw.text(
-        (48, y),
-        f"Whole tumor {volumes['wt_ml']:.1f} mL   Tumor core {volumes['tc_ml']:.1f} mL   Enhancing {volumes['et_ml']:.1f} mL",
-        fill=(236, 242, 248),
-        font=font,
-    )
-    y += 48
-    if location.get("withheld"):
-        draw.text((48, y), f"Location withheld: {location.get('withheld_reason') or 'QC'}", fill=(240, 160, 120), font=font_small)
-        y += 32
-    elif location.get("headline"):
-        draw.text((48, y), location["headline"], fill=(200, 214, 230), font=font_small)
-        y += 32
+    plaus = "passed" if location["plausibility"]["passed"] else "failed"
+    source = "Public BraTS training case" if case_id.startswith("BraTS") else "Uploaded study"
+    sequences = ", ".join(location.get("sequences") or ["FLAIR", "T1", "T1c", "T2"])
 
-    # Three key axial views (FLAIR + overlay at mid tumor).
+    if location.get("withheld"):
+        findings_location = (
+            f"Location not reported: {location.get('withheld_reason') or 'registration quality insufficient'}."
+        )
+    elif location.get("headline"):
+        findings_location = location["headline"]
+    else:
+        findings_location = "Location not reported: no nearby-structure summary available."
+
+    lesion = "A lesion is present on the submitted MRI sequences." if wt > 0 else "No lesion volume was measured."
+    findings = (
+        f"{lesion} Estimated volumes: whole tumor {wt:.1f} mL, tumor core {tc:.1f} mL, "
+        f"enhancing {et:.1f} mL, edema (WT−TC) {edema:.1f} mL, necrosis (TC−ET) {necrosis:.1f} mL. "
+        f"{findings_location}"
+    )
+    impression = (
+        f"Automated segmentation suggests a lesion with whole-tumor volume about {wt:.1f} mL "
+        f"and enhancing component about {et:.1f} mL. "
+        f"Registration QC is {qc}; size-floor check {plaus}. "
+        "Findings are research estimates only. Model-estimated, unverified."
+    )
+
+    image_blocks = []
     try:
         data, _affine = _cached_volume(app, case_id, "flair")
         pred = _cached_pred(app, case_id)
-        from recon.evaluate import regions_from_label
-
-        wt = regions_from_label(pred)["WT"]
-        if np.any(wt):
-            zs = np.where(np.any(wt, axis=(0, 1)))[0]
+        wt_mask = regions_from_label(pred)["WT"]
+        if np.any(wt_mask):
+            zs = np.where(np.any(wt_mask, axis=(0, 1)))[0]
             indices = [int(zs[len(zs) // 4]), int(zs[len(zs) // 2]), int(zs[(3 * len(zs)) // 4])]
         else:
             mid = data.shape[2] // 2
@@ -1016,32 +1051,125 @@ def _build_report_pdf(app: Flask, case_id: str) -> bytes:
         brain = _brain_mask(app, case_id, data)
         lo, hi = _window_for(data, brain if brain is not None and brain.shape == data.shape else None)
         alpha = _combined_foreground(app, case_id, data.shape)
-        x = 48
         for index in indices:
-            mri = Image.open(io.BytesIO(_cached_slice_png(app, case_id, "flair", data, 2, index, lo, hi, alpha=alpha))).convert("RGBA")
+            mri = Image.open(
+                io.BytesIO(_cached_slice_png(app, case_id, "flair", data, 2, index, lo, hi, alpha=alpha))
+            ).convert("RGBA")
             overlay = Image.open(io.BytesIO(_cached_overlay_png(app, case_id, pred, 2, index))).convert("RGBA")
-            composed = Image.alpha_composite(mri, overlay).convert("RGB").resize((360, 360))
-            page.paste(composed, (x, y))
-            draw.text((x, y + 368), f"Axial z={index}", fill=(160, 176, 196), font=font_small)
-            x += 380
-        y += 420
+            composed = Image.alpha_composite(mri, overlay).convert("RGB")
+            buf = io.BytesIO()
+            composed.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            image_blocks.append(
+                f'<figure><img src="data:image/png;base64,{b64}" alt="Axial FLAIR z={index}">'
+                f"<figcaption>Axial FLAIR, slice {index}, tumor outlined</figcaption></figure>"
+            )
+        image_note = "Three axial key images with tumor outline. A 3D snapshot is not embedded in this demo report."
     except Exception as exc:  # noqa: BLE001
-        draw.text((48, y), f"Views unavailable: {exc}", fill=(240, 160, 120), font=font_small)
-        y += 36
+        image_note = f"Key images unavailable: {exc}"
+        image_blocks = []
 
-    y = max(y, 1500)
-    caveats = [
-        "Caveats: atlas tracts are not patient tractography.",
-        "Do not use for clinical diagnosis or treatment decisions.",
-        "Scans were processed locally; this report contains no patient identifiers beyond the case ID.",
-    ]
-    for line in caveats:
-        draw.text((48, y), line, fill=(140, 156, 172), font=font_small)
-        y += 28
+    dice_rows = ""
+    if dice:
+        dice_rows = (
+            f"<tr><td>Dice vs expert mask</td><td>WT {dice.get('wt', '—')}</td>"
+            f"<td>TC {dice.get('tc', '—')}</td><td>ET {dice.get('et', '—')}</td></tr>"
+        )
 
-    buffer = io.BytesIO()
-    page.save(buffer, format="PDF", resolution=150.0)
-    return buffer.getvalue()
+    qc_reasons = "".join(f"<li>{esc(reason)}</li>" for reason in (location["qc"].get("reasons") or []))
+    if not qc_reasons:
+        qc_reasons = "<li>No additional QC flags.</li>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Research Imaging Summary — {esc(case_id)}</title>
+<style>
+  @page {{ size: A4; margin: 16mm; }}
+  body {{ font: 11pt/1.45 "IBM Plex Sans", "Segoe UI", sans-serif; color: #1a1f27; margin: 0; background: #fff; }}
+  main {{ max-width: 780px; margin: 0 auto; padding: 24px; }}
+  h1 {{ font-size: 18pt; margin: 0 0 4px; }}
+  h2 {{ font-size: 12pt; margin: 22px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; page-break-after: avoid; }}
+  .banner {{ background: #fff3cd; border: 2px solid #c9a227; color: #5c4500; padding: 10px 12px; font-weight: 700;
+             text-transform: uppercase; letter-spacing: 0.03em; margin: 12px 0 18px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 8px 0 12px; page-break-inside: avoid; }}
+  th, td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; }}
+  th {{ background: #f3f5f8; }}
+  .meta {{ color: #555; font-size: 10pt; }}
+  .images {{ display: flex; flex-wrap: wrap; gap: 10px; page-break-inside: avoid; }}
+  .images figure {{ margin: 0; width: 230px; }}
+  .images img {{ width: 100%; border: 1px solid #bbb; }}
+  .sign {{ border: 1px solid #999; padding: 14px; margin-top: 18px; page-break-inside: avoid; }}
+  .muted {{ color: #666; }}
+  @media print {{
+    body {{ background: #fff; }}
+    main {{ padding: 0; max-width: none; }}
+    a {{ color: inherit; text-decoration: none; }}
+  }}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Tumor in context, Research Imaging Summary</h1>
+    <p class="meta">Report ID: {esc(report_id)} · Generated: {esc(stamp)}</p>
+    <p class="banner">RESEARCH PROTOTYPE, NOT A CLINICAL REPORT, NOT FOR DIAGNOSIS</p>
+  </header>
+
+  <h2>Study details</h2>
+  <table>
+    <tr><th>Study / case ID</th><td>{esc(case_id)}</td></tr>
+    <tr><th>Data source</th><td>{esc(source)}</td></tr>
+    <tr><th>Sequences used</th><td>{esc(sequences)}</td></tr>
+    <tr><th>Software / model</th><td>Tumor in context demo viewer · BraTS-trained SegResNet (when available)</td></tr>
+    <tr><th>Patient name</th><td>not recorded</td></tr>
+    <tr><th>Patient ID / DOB / sex</th><td>not recorded</td></tr>
+  </table>
+
+  <h2>Technique</h2>
+  <p>MRI volumes were reoriented to RAS. Tumor labels (necrosis, edema, enhancing) come from the stored
+  model segmentation for this case. Structure proximity uses the exported scene atlas when registration QC allows.</p>
+
+  <h2>Findings</h2>
+  <p>{esc(findings)}</p>
+
+  <h2>Measurements</h2>
+  <table>
+    <thead><tr><th>Region</th><th>Volume (mL)</th><th>Percent of whole tumor</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Whole tumor (WT)</td><td>{wt:.1f}</td><td>100%</td><td>Necrosis + edema + enhancing</td></tr>
+      <tr><td>Tumor core (TC)</td><td>{tc:.1f}</td><td>{pct(tc)}</td><td>Necrosis + enhancing</td></tr>
+      <tr><td>Enhancing (ET)</td><td>{et:.1f}</td><td>{pct(et)}</td><td></td></tr>
+      <tr><td>Edema (approx.)</td><td>{edema:.1f}</td><td>{pct(edema)}</td><td>WT − TC</td></tr>
+      <tr><td>Necrosis (approx.)</td><td>{necrosis:.1f}</td><td>{pct(necrosis)}</td><td>TC − ET</td></tr>
+      {dice_rows}
+    </tbody>
+  </table>
+
+  <h2>Key images</h2>
+  <p class="muted">{esc(image_note)}</p>
+  <div class="images">{"".join(image_blocks)}</div>
+
+  <h2>Impression</h2>
+  <p>{esc(impression)}</p>
+
+  <h2>Limitations and QC</h2>
+  <p>QC status: <strong>{esc(qc)}</strong>. Plausibility (size floor {location['plausibility']['floor_ml']} mL): <strong>{esc(plaus)}</strong>.</p>
+  <ul>{qc_reasons}
+    <li>Model trained on BraTS public data; not validated for real-patient care.</li>
+    <li>Atlas tracts are not patient tractography.</li>
+    <li>Location may be withheld when registration quality is insufficient.</li>
+  </ul>
+
+  <div class="sign">
+    <p><strong>Sign-off</strong></p>
+    <p>Reviewed by: ____________________ &nbsp;&nbsp; Date: __________ &nbsp;&nbsp; Status: not reviewed</p>
+  </div>
+</main>
+</body>
+</html>
+"""
 
 
 def _slice_png(volume: np.ndarray, axis: int, index: int) -> bytes:

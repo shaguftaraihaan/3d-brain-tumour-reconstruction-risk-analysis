@@ -40,6 +40,14 @@ _OVERLAY = {
     4: (59, 130, 246, 255),
 }
 
+# Expert / ground-truth palette (distinct from the model colours above).
+_OVERLAY_EXPERT = {
+    2: (46, 204, 113, 255),
+    1: (155, 89, 182, 255),
+    3: (26, 188, 156, 255),
+    4: (26, 188, 156, 255),
+}
+
 
 def resolve_sequence(name: str) -> str:
     key = (name or "flair").strip().lower()
@@ -170,8 +178,13 @@ def render_slice_png(volume, axis: int, index: int, lo: float, hi: float, alpha=
     return buf.getvalue()
 
 
-def render_overlay_png(label, axis: int, index: int) -> bytes:
-    """RGBA tumor contours. Transparent where there is no edge."""
+def render_overlay_png(label, axis: int, index: int, *, palette: str = "model") -> bytes:
+    """RGBA tumor contours. Transparent where there is no edge.
+
+    ``palette="expert"`` uses a green/teal scheme so the second (ground-truth)
+    mask is visually distinct from the model overlay.
+    """
+    colors = _OVERLAY_EXPERT if palette == "expert" else _OVERLAY
     slab = orient_ras_slice(np.rint(np.asarray(label)).astype(np.int16), axis, index)
     rgba = np.zeros(slab.shape + (4,), dtype=np.uint8)
     for value in (2, 3, 1):
@@ -184,7 +197,7 @@ def render_overlay_png(label, axis: int, index: int) -> bytes:
         edge = mask & ~eroded
         if np.any(edge):
             edge = ndimage.binary_dilation(edge)
-        rgba[edge] = _OVERLAY[value]
+        rgba[edge] = colors[value]
     buf = io.BytesIO()
     Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
     return buf.getvalue()
