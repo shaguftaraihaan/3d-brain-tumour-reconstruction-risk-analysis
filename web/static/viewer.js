@@ -88,6 +88,7 @@ const upload = { files: [], folder: null, caseId: null, skipped: 0, dicom: false
 
 setupUpload();
 loadCasePicker();
+loadCapabilities();
 
 if (caseId) {
   uploadScreen.hidden = true;
@@ -425,6 +426,25 @@ async function loadCasePicker() {
     }
   } catch (error) {
     status.textContent = `Could not list cases: ${error.message || error}`;
+  }
+}
+
+async function loadCapabilities() {
+  const note = document.querySelector("#demo-note");
+  const block = document.querySelector("#upload-block");
+  const submit = document.querySelector("#upload-submit");
+  try {
+    const caps = await fetch("/api/capabilities").then(readJson);
+    if (caps.upload) return;
+    const message = caps.message || "Upload and inference are not available in this demo.";
+    if (note) {
+      note.hidden = false;
+      note.textContent = message;
+    }
+    if (block) block.hidden = true;
+    if (submit) submit.disabled = true;
+  } catch (_error) {
+    // Keep the upload UI visible if the capabilities endpoint is unavailable.
   }
 }
 

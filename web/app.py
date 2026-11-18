@@ -59,6 +59,11 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     def missing(exc):
         return jsonify({"error": str(exc)}), 404
 
+    @app.get("/api/capabilities")
+    def capabilities():
+        """Whether upload/inference can run in this deployment."""
+        return jsonify(_capabilities())
+
     @app.post("/api/identify")
     def identify():
         """Role of each uploaded file name, so the page can show plain scan names."""
@@ -67,11 +72,13 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
         payload = request.get_json(silent=True) or {}
         names = [str(name) for name in payload.get("names", [])][:200]
         folder = payload.get("folder") or None
+        caps = _capabilities()
         return jsonify(
             {
                 "roles": [identify_modality(name) for name in names],
                 "required": list(_REQUIRED),
                 "case_id": guess_case_id(names, folder),
+                **caps,
             }
         )
 
@@ -87,12 +94,18 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
                 name = path.name
                 if not _CASE_ID.match(name):
                     continue
+                # Never advertise real-patient study folders even if present on disk.
+                if name == "real" or name.startswith("study_"):
+                    continue
                 if (path / "scene.glb").is_file() and (path / "manifest.json").is_file():
                     ids.append(name)
         return jsonify({"cases": ids})
 
     @app.post("/api/cases")
     def create_case():
+        caps = _capabilities()
+        if not caps["upload"]:
+            return jsonify({"error": caps["message"], "demo": True}), 503
         try:
             case_id = _safe_case_id(request.form.get("case_id") or _guess_case_id())
         except ValueError as exc:
@@ -353,7 +366,12 @@ def _enqueue_case(app: Flask, case_id: str):
 
     anatomy = _form_flag("anatomy", default=True)
     tracts = _form_flag("tracts", default=False)
-    model, checkpoint = _upload_model()
+    try:
+        model, checkpoint = _upload_model()
+    except FileNotFoundError as exc:
+        with _BUILDING_LOCK:
+            _BUILDING.discard(case_id)
+        return jsonify({"error": str(exc), "demo": True}), 503
     synthseg = saved.get("synthseg")
     outputs = app.config["OUTPUTS"]
     progress = BuildProgress()
@@ -442,20 +460,72 @@ def _safe_case_id(value: str) -> str:
     return text
 
 
+_DEMO_UNAVAILABLE = (
+    "Upload and inference are not available in this demo. "
+    "Open a public BraTS case from the list instead."
+)
+
+
+def _checkpoint_candidates() -> list[Path]:
+    """Paths that may hold a SegResNet weight file for upload reconstruction."""
+    from recon.infer import ABHINAV_CHECKPOINT
+
+    candidates: list[Path] = []
+    env = os.environ.get("BRATS_CHECKPOINT")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path(ABHINAV_CHECKPOINT))
+    candidates.append(ROOT / "models" / "best_model.pt")
+    candidates.append(ROOT / "checkpoints" / "brats_scale_full" / "best_model.pt")
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _find_checkpoint() -> Path | None:
+    for path in _checkpoint_candidates():
+        if path.is_file():
+            return path
+    return None
+
+
+def _capabilities() -> dict:
+    """Upload/inference availability for the HF demo and local installs."""
+    checkpoint = _find_checkpoint()
+    upload = checkpoint is not None
+    return {
+        "upload": upload,
+        "inference": upload,
+        "checkpoint": bool(checkpoint),
+        "message": None if upload else _DEMO_UNAVAILABLE,
+    }
+
+
 def _upload_model() -> tuple[str, Path]:
     """``abhinav_v3`` when its checkpoint is present, else the local checkpoint.
 
     ``BRATS_UPLOAD_MODEL=ours`` forces the local checkpoint.
+    Raises ``FileNotFoundError`` when no weight file exists (callers should check
+    ``_capabilities`` first so the demo returns 503 instead of a 500).
     """
-    from recon.infer import ABHINAV_V3, OURS, abhinav_checkpoint_candidates
-    from scripts.reconstruct import default_checkpoint
+    from recon.infer import ABHINAV_CHECKPOINT, ABHINAV_V3, OURS
 
     wanted = os.environ.get("BRATS_UPLOAD_MODEL", ABHINAV_V3)
-    if wanted == ABHINAV_V3:
-        for path in abhinav_checkpoint_candidates():
-            if path.is_file():
-                return ABHINAV_V3, path
-    return OURS, default_checkpoint()
+    if wanted == ABHINAV_V3 and Path(ABHINAV_CHECKPOINT).is_file():
+        return ABHINAV_V3, Path(ABHINAV_CHECKPOINT)
+    found = _find_checkpoint()
+    if found is None:
+        raise FileNotFoundError(_DEMO_UNAVAILABLE)
+    if found == Path(ABHINAV_CHECKPOINT):
+        return ABHINAV_V3, found
+    return OURS, found
 
 
 def _guess_case_id() -> str:

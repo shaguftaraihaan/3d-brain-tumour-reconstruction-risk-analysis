@@ -106,15 +106,42 @@ def test_landing_and_viewer_routes_are_separate():
     assert b"landing.css" in landing.data
     assert b"hero.js" in landing.data
     assert b"viewer.js" not in landing.data
+    assert b"What this is not" in landing.data
+    assert b"BraTS" in landing.data
 
     viewer = client.get("/viewer")
     assert viewer.status_code == 200
     assert b'id="viewer"' in viewer.data or b'id="view"' in viewer.data
     assert b"viewer.js" in viewer.data
+    assert b"Research prototype, not for diagnosis" in viewer.data
     assert b"Tumor in context" not in viewer.data or b"Open a scan" in viewer.data
 
     assert client.get("/static/hero.js").status_code == 200
     assert client.get("/static/landing.css").status_code == 200
+
+
+def test_capabilities_and_upload_without_checkpoint(tmp_path):
+    from web import app as web_app
+
+    outputs = tmp_path / "outputs"
+    cases = tmp_path / "cases"
+    outputs.mkdir()
+    cases.mkdir()
+    client = create_app(outputs, cases).test_client()
+
+    original = web_app._find_checkpoint
+    web_app._find_checkpoint = lambda: None
+    try:
+        caps = client.get("/api/capabilities")
+        assert caps.status_code == 200
+        assert caps.json["upload"] is False
+        assert "not available in this demo" in caps.json["message"]
+        denied = client.post("/api/cases", data={"case_id": "nope"})
+        assert denied.status_code == 503
+        assert denied.json["demo"] is True
+        assert "not available in this demo" in denied.json["error"]
+    finally:
+        web_app._find_checkpoint = original
 
 
 def test_viewer_page_has_groups_clipping_and_tract_note():
