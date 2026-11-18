@@ -76,6 +76,17 @@ def _rewrite_static_html(src: Path, dest: Path) -> None:
     dest.write_text(text, encoding="utf-8")
 
 
+def _copy_vercel_config(dest_root: Path) -> None:
+    """Ship a vercel.json inside the export so ``dist/static_demo`` deploys alone."""
+    src = ROOT / "vercel.json"
+    if not src.is_file():
+        return
+    payload = json.loads(src.read_text(encoding="utf-8"))
+    # When the folder itself is the Vercel root, output is ``.`` not ``dist/static_demo``.
+    payload["outputDirectory"] = "."
+    (dest_root / "vercel.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def _copy_viewer_assets(dest_root: Path) -> None:
     static = ROOT / "web" / "static"
     # Core viewer files (relative paths after HTML rewrite).
@@ -90,6 +101,7 @@ def _copy_viewer_assets(dest_root: Path) -> None:
     if vendor.is_dir():
         shutil.copytree(vendor, dest_root / "vendor", dirs_exist_ok=True)
     _rewrite_static_html(static / "index.html", dest_root / "index.html")
+    _copy_vercel_config(dest_root)
     # Optional landing page with relative links into the viewer.
     landing = dest_root / "landing.html"
     if landing.is_file():

@@ -23,11 +23,17 @@ Research prototype, not for diagnosis. Demo cases are derived from the **public 
    # open http://127.0.0.1:4173/index.html?case=BraTS20_Training_002
    ```
 
-3. Deploy the folder to Vercel (no build step — `vercel.json` points `outputDirectory` at `dist/static_demo`):
+3. Deploy with the Vercel CLI. Prefer deploying the export folder itself (the exporter copies a `vercel.json` with `"outputDirectory": "."` into `dist/static_demo`):
+
+   ```bash
+   npx vercel --prod --cwd dist/static_demo
+   ```
+
+   Or from the repo root (root `vercel.json` uses `"outputDirectory": "dist/static_demo"`):
 
    ```bash
    npx vercel link          # once per machine / project
-   npx vercel --prod        # from the repo root, after export
+   npx vercel --prod        # after export
    ```
 
    Or in the Vercel dashboard: import the repo, set **Output Directory** to `dist/static_demo`, leave **Build Command** empty, and either commit a pre-built `dist/static_demo` or run the exporter in CI before deploy.

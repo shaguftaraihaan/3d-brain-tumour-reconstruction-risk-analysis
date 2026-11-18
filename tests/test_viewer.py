@@ -1,7 +1,11 @@
 """Slice PNGs, case routes, and the viewer page."""
 
+from __future__ import annotations
+
+import contextlib
 import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,6 +27,30 @@ def _nifti(path, data, affine=None):
         nib.Nifti1Image(np.asarray(data, dtype=np.float32), np.eye(4) if affine is None else affine),
         path,
     )
+
+
+@contextlib.contextmanager
+def _force_full_upload_mode(tmp_path: Path):
+    """Clear BRATS_DEMO and stub a checkpoint so upload tests are not demo-gated.
+
+    These tests exercise the Flask upload path. They previously leaked 503s whenever
+    ``BRATS_DEMO=1`` was set in the environment (same on deploy-render and static-demo).
+    """
+    import web.app as web_app
+
+    previous = os.environ.pop("BRATS_DEMO", None)
+    checkpoint = Path(tmp_path) / "stub_checkpoint.pt"
+    checkpoint.write_bytes(b"stub")
+    original = web_app._find_checkpoint
+    web_app._find_checkpoint = lambda: checkpoint
+    try:
+        yield checkpoint
+    finally:
+        web_app._find_checkpoint = original
+        if previous is None:
+            os.environ.pop("BRATS_DEMO", None)
+        else:
+            os.environ["BRATS_DEMO"] = previous
 
 
 def test_slice_png_places_the_voxel_on_the_second_free_axis():
@@ -270,68 +298,69 @@ def test_upload_calls_build_scene(tmp_path=None):
     original_ckpt = reconstruct.default_checkpoint
     scene.build_scene = fake_build
     reconstruct.default_checkpoint = lambda: Path("checkpoint.pt")
-    try:
-        client = app.test_client()
-        buffers = {}
-        for suffix in ("t2f", "t1n", "t1c", "t2w"):
-            path = root / f"{suffix}.nii.gz"
-            nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), path)
-            buffers[suffix] = io.BytesIO(path.read_bytes())
-        response = client.post(
-            "/api/cases",
-            data={
-                "case_id": "scan1",
-                "anatomy": "1",
-                "tracts": "1",
-                **{suffix: (buf, f"{suffix}.nii.gz") for suffix, buf in buffers.items()},
-            },
-        )
-        assert response.status_code == 202
-        assert response.json["job"] == "/api/cases/scan1/job"
-        job = _wait_job(client, response.json["job"])
-        assert job.json["status"] == "done"
-        assert job.json["viewer"] == "/viewer?case=scan1"
-        assert "stages" in job.json
-        assert set(job.json["stages"]) >= {"Loading", "Tumor", "Anatomy", "Lobes", "Meshing", "Done"}
-    finally:
-        scene.build_scene = original_build
-        reconstruct.default_checkpoint = original_ckpt
+    with _force_full_upload_mode(root):
+        try:
+            client = app.test_client()
+            buffers = {}
+            for suffix in ("t2f", "t1n", "t1c", "t2w"):
+                path = root / f"{suffix}.nii.gz"
+                nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), path)
+                buffers[suffix] = io.BytesIO(path.read_bytes())
+            response = client.post(
+                "/api/cases",
+                data={
+                    "case_id": "scan1",
+                    "anatomy": "1",
+                    "tracts": "1",
+                    **{suffix: (buf, f"{suffix}.nii.gz") for suffix, buf in buffers.items()},
+                },
+            )
+            assert response.status_code == 202
+            assert response.json["job"] == "/api/cases/scan1/job"
+            job = _wait_job(client, response.json["job"])
+            assert job.json["status"] == "done"
+            assert job.json["viewer"] == "/viewer?case=scan1"
+            assert "stages" in job.json
+            assert set(job.json["stages"]) >= {"Loading", "Tumor", "Anatomy", "Lobes", "Meshing", "Done"}
+        finally:
+            scene.build_scene = original_build
+            reconstruct.default_checkpoint = original_ckpt
 
-    assert response.json["viewer"] == "/viewer?case=scan1"
-    assert calls["anatomy"] is True
-    assert calls["tracts"] is True
-    assert calls["tta"] == ("fast", 0.5)
-    from recon.infer import ABHINAV_CHECKPOINT
+        assert response.json["viewer"] == "/viewer?case=scan1"
+        assert calls["anatomy"] is True
+        assert calls["tracts"] is True
+        assert calls["tta"] == ("fast", 0.5)
+        from recon.infer import ABHINAV_CHECKPOINT
 
-    if Path(ABHINAV_CHECKPOINT).is_file():
-        assert calls["model"] == "abhinav_v3"
-        assert Path(calls["checkpoint"]) == Path(ABHINAV_CHECKPOINT)
-    assert Path(calls["case"]).name == "scan1"
-    assert (root / "cases" / "scan1" / "seg.nii.gz").is_file()
+        if Path(ABHINAV_CHECKPOINT).is_file():
+            assert calls["model"] == "abhinav_v3"
+            assert Path(calls["checkpoint"]) == Path(ABHINAV_CHECKPOINT)
+        assert Path(calls["case"]).name == "scan1"
+        assert (root / "cases" / "scan1" / "seg.nii.gz").is_file()
 
-    defaulted = {}
+        defaulted = {}
 
-    def fake_default(case, anatomy=False, tracts=False, **kwargs):
-        defaulted["anatomy"] = anatomy
-        defaulted["tracts"] = tracts
-        return {"case_id": "scan2"}
+        def fake_default(case, anatomy=False, tracts=False, **kwargs):
+            defaulted["anatomy"] = anatomy
+            defaulted["tracts"] = tracts
+            return {"case_id": "scan2"}
 
-    scene.build_scene = fake_default
-    reconstruct.default_checkpoint = lambda: Path("checkpoint.pt")
-    try:
-        buffers = {suffix: io.BytesIO((root / f"{suffix}.nii.gz").read_bytes()) for suffix in ("t2f", "t1n", "t1c", "t2w")}
-        response = client.post(
-            "/api/cases",
-            data={"case_id": "scan2", **{suffix: (buf, f"{suffix}.nii.gz") for suffix, buf in buffers.items()}},
-        )
-        assert response.status_code == 202
-        job = _wait_job(client, response.json["job"])
-        assert job.json["status"] == "done"
-    finally:
-        scene.build_scene = original_build
-        reconstruct.default_checkpoint = original_ckpt
-    assert defaulted["anatomy"] is True
-    assert defaulted["tracts"] is False
+        scene.build_scene = fake_default
+        reconstruct.default_checkpoint = lambda: Path("checkpoint.pt")
+        try:
+            buffers = {suffix: io.BytesIO((root / f"{suffix}.nii.gz").read_bytes()) for suffix in ("t2f", "t1n", "t1c", "t2w")}
+            response = client.post(
+                "/api/cases",
+                data={"case_id": "scan2", **{suffix: (buf, f"{suffix}.nii.gz") for suffix, buf in buffers.items()}},
+            )
+            assert response.status_code == 202
+            job = _wait_job(client, response.json["job"])
+            assert job.json["status"] == "done"
+        finally:
+            scene.build_scene = original_build
+            reconstruct.default_checkpoint = original_ckpt
+        assert defaulted["anatomy"] is True
+        assert defaulted["tracts"] is False
 
 
 def test_file_names_are_matched_to_scans():
@@ -366,30 +395,38 @@ def test_identify_endpoint_and_plain_missing_message(tmp_path=None):
     import tempfile
 
     root = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
-    client = create_app(root / "outputs", root / "cases").test_client()
-    names = ["flair.nii.gz", "t1.nii.gz", "t1c.nii.gz", "t2.nii.gz", "readme.nii"]
-    response = client.post("/api/identify", json={"names": names, "folder": "BraTS20_Training_002"})
-    assert response.status_code == 200
-    assert response.json["roles"] == ["t2f", "t1n", "t1c", "t2w", None]
-    assert response.json["required"] == ["t2f", "t1n", "t1c", "t2w"]
-    assert response.json["case_id"] == "BraTS20_Training_002"
+    with _force_full_upload_mode(root):
+        client = create_app(root / "outputs", root / "cases").test_client()
+        names = ["flair.nii.gz", "t1.nii.gz", "t1c.nii.gz", "t2.nii.gz", "readme.nii"]
+        response = client.post("/api/identify", json={"names": names, "folder": "BraTS20_Training_002"})
+        assert response.status_code == 200
+        assert response.json["roles"] == ["t2f", "t1n", "t1c", "t2w", None]
+        assert response.json["required"] == ["t2f", "t1n", "t1c", "t2w"]
+        assert response.json["case_id"] == "BraTS20_Training_002"
+        assert response.json["upload"] is True
 
-    path = root / "flair.nii.gz"
-    nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), path)
-    partial = client.post("/api/cases", data={"case_id": "partial", "t2f": (io.BytesIO(path.read_bytes()), "flair.nii.gz")})
-    assert partial.status_code == 400
-    assert partial.json["error"] == "Missing scans: T1, T1 with contrast, T2"
+        path = root / "flair.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.float32), np.eye(4)), path)
+        partial = client.post(
+            "/api/cases",
+            data={"case_id": "partial", "t2f": (io.BytesIO(path.read_bytes()), "flair.nii.gz")},
+        )
+        assert partial.status_code == 400
+        assert partial.json["error"] == "Missing scans: T1, T1 with contrast, T2"
 
-    import web.app as web_app
+        import web.app as web_app
 
-    web_app._BUILDING.add("busy")
-    try:
-        busy = client.post("/api/cases", data={"case_id": "busy", "t2f": (io.BytesIO(path.read_bytes()), "flair.nii.gz")})
-    finally:
-        web_app._BUILDING.discard("busy")
-    assert busy.status_code == 409
-    assert "already being built" in busy.json["error"]
-    assert not (root / "cases" / "busy").exists()
+        web_app._BUILDING.add("busy")
+        try:
+            busy = client.post(
+                "/api/cases",
+                data={"case_id": "busy", "t2f": (io.BytesIO(path.read_bytes()), "flair.nii.gz")},
+            )
+        finally:
+            web_app._BUILDING.discard("busy")
+        assert busy.status_code == 409
+        assert "already being built" in busy.json["error"]
+        assert not (root / "cases" / "busy").exists()
 
 
 def test_upload_page_guides_without_modality_jargon():
@@ -538,23 +575,24 @@ def test_upload_rejects_mismatched_grid(tmp_path=None):
     import tempfile
 
     root = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
-    client = create_app(root / "outputs", root / "cases").test_client()
-    buffers = {}
-    for suffix in ("t2f", "t1n", "t1c"):
-        path = root / f"{suffix}.nii.gz"
-        nib.save(nib.Nifti1Image(np.ones((4, 4, 4), np.float32), np.eye(4)), path)
-        buffers[suffix] = io.BytesIO(path.read_bytes())
-    path = root / "t2w.nii.gz"
-    nib.save(nib.Nifti1Image(np.ones((5, 4, 4), np.float32), np.eye(4)), path)
-    buffers["t2w"] = io.BytesIO(path.read_bytes())
-    response = client.post(
-        "/api/cases",
-        data={"case_id": "mismatch", **{suffix: (buf, f"{suffix}.nii.gz") for suffix, buf in buffers.items()}},
-    )
-    assert response.status_code == 400
-    assert "T2" in response.json["error"]
-    job = client.get("/api/cases/mismatch/job")
-    assert job.status_code == 404
+    with _force_full_upload_mode(root):
+        client = create_app(root / "outputs", root / "cases").test_client()
+        buffers = {}
+        for suffix in ("t2f", "t1n", "t1c"):
+            path = root / f"{suffix}.nii.gz"
+            nib.save(nib.Nifti1Image(np.ones((4, 4, 4), np.float32), np.eye(4)), path)
+            buffers[suffix] = io.BytesIO(path.read_bytes())
+        path = root / "t2w.nii.gz"
+        nib.save(nib.Nifti1Image(np.ones((5, 4, 4), np.float32), np.eye(4)), path)
+        buffers["t2w"] = io.BytesIO(path.read_bytes())
+        response = client.post(
+            "/api/cases",
+            data={"case_id": "mismatch", **{suffix: (buf, f"{suffix}.nii.gz") for suffix, buf in buffers.items()}},
+        )
+        assert response.status_code == 400
+        assert "T2" in response.json["error"]
+        job = client.get("/api/cases/mismatch/job")
+        assert job.status_code == 404
 
 
 def test_upload_two_cases_include_tissue_gm_wm(tmp_path=None):
@@ -610,38 +648,39 @@ def test_upload_two_cases_include_tissue_gm_wm(tmp_path=None):
         parc[2:4, 2:4, 10:12] = 10 + seed
         return parc
 
-    client = app.test_client()
     manifests = {}
-    try:
-        for case_id, seed in (("BraTS20_Training_004", 0), ("BraTS20_Training_022", 1)):
-            brain = np.ones(shape, dtype=np.float32) * (seed + 1)
-            data = {
-                "case_id": case_id,
-                "anatomy": "1",
-            }
-            files = {}
-            for suffix in ("t2f", "t1n", "t1c", "t2w"):
-                path = root / f"{case_id}_{suffix}.nii.gz"
-                nib.save(nib.Nifti1Image(brain, affine), path)
-                files[suffix] = (io.BytesIO(path.read_bytes()), f"{suffix}.nii.gz")
-            synth = root / f"{case_id}_synthseg.nii.gz"
-            nib.save(nib.Nifti1Image(parc_for(seed).astype(np.float32), affine), synth)
-            files["synthseg"] = (io.BytesIO(synth.read_bytes()), "synthseg.nii.gz")
-            data.update(files)
-            response = client.post("/api/cases", data=data)
-            assert response.status_code == 202, response.json
-            job = _wait_job(client, response.json["job"], timeout=60)
-            assert job.json["status"] == "done", job.json
-            manifest = client.get(f"/api/cases/{case_id}/manifest.json")
-            assert manifest.status_code == 200
-            manifests[case_id] = manifest.json
-    finally:
-        infer.predict_probs = originals["predict"]
-        infer.load_model = originals["load"]
-        infer.apply_model_preprocessing = originals["pre"]
-        Config.for_model = originals["config"]
-        reconstruct.default_checkpoint = originals["ckpt"]
-        scene.default_anatomy_cache_root = originals["cache"]
+    with _force_full_upload_mode(root):
+        client = app.test_client()
+        try:
+            for case_id, seed in (("BraTS20_Training_004", 0), ("BraTS20_Training_022", 1)):
+                brain = np.ones(shape, dtype=np.float32) * (seed + 1)
+                data = {
+                    "case_id": case_id,
+                    "anatomy": "1",
+                }
+                files = {}
+                for suffix in ("t2f", "t1n", "t1c", "t2w"):
+                    path = root / f"{case_id}_{suffix}.nii.gz"
+                    nib.save(nib.Nifti1Image(brain, affine), path)
+                    files[suffix] = (io.BytesIO(path.read_bytes()), f"{suffix}.nii.gz")
+                synth = root / f"{case_id}_synthseg.nii.gz"
+                nib.save(nib.Nifti1Image(parc_for(seed).astype(np.float32), affine), synth)
+                files["synthseg"] = (io.BytesIO(synth.read_bytes()), "synthseg.nii.gz")
+                data.update(files)
+                response = client.post("/api/cases", data=data)
+                assert response.status_code == 202, response.json
+                job = _wait_job(client, response.json["job"], timeout=60)
+                assert job.json["status"] == "done", job.json
+                manifest = client.get(f"/api/cases/{case_id}/manifest.json")
+                assert manifest.status_code == 200
+                manifests[case_id] = manifest.json
+        finally:
+            infer.predict_probs = originals["predict"]
+            infer.load_model = originals["load"]
+            infer.apply_model_preprocessing = originals["pre"]
+            Config.for_model = originals["config"]
+            reconstruct.default_checkpoint = originals["ckpt"]
+            scene.default_anatomy_cache_root = originals["cache"]
 
     for case_id, meta in manifests.items():
         structures = meta["structures"]
