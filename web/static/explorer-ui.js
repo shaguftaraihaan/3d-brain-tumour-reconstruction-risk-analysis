@@ -427,13 +427,22 @@ const ACS_SIZE = 288;
 const imageCache = new Map();
 const acsTokens = [0, 0, 0];
 const acsLayout = new WeakMap();
+let acsPaintGeneration = 0;
 
 function loadImage(url) {
   if (imageCache.has(url)) return imageCache.get(url);
   const promise = new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
+    // Same-origin slice/overlay URLs: do not set crossOrigin. On some CDN
+    // fronts, anonymous CORS without ACAO leaves the image undrawable and the
+    // ACS canvases stuck at the blank 300×150 default.
+    img.onload = () => {
+      if (!img.width || !img.height) {
+        reject(new Error(`image empty: ${url}`));
+        return;
+      }
+      resolve(img);
+    };
     img.onerror = () => reject(new Error(`image failed: ${url}`));
     img.src = url;
   });
@@ -441,6 +450,24 @@ function loadImage(url) {
   promise.catch(() => imageCache.delete(url));
   if (imageCache.size > 90) imageCache.delete(imageCache.keys().next().value);
   return promise;
+}
+
+/** True when all three ACS canvases have been painted above the blank default. */
+export function acsStripIsPainted() {
+  const root = document.querySelector("#acs-strip");
+  if (!root) return false;
+  const canvases = [...root.querySelectorAll("figure[data-acs] canvas")];
+  if (canvases.length < 3) return false;
+  return canvases.every((canvas) => {
+    if (canvas.width < 64 || canvas.height < 64) return false;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return false;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 0; i < data.length; i += 16) {
+      if (data[i] | data[i + 1] | data[i + 2]) return true;
+    }
+    return false;
+  });
 }
 
 export function acsIndices(volume, crosshair) {
@@ -457,6 +484,7 @@ export function paintAcsStrip(opts) {
   if (!root || !opts.volume || !opts.volume.shape) return;
   const { volume } = opts;
   const indices = acsIndices(volume, opts.crosshair);
+  const generation = ++acsPaintGeneration;
   root.querySelectorAll("figure[data-acs]").forEach((figure) => {
     const axis = Number(figure.dataset.acs);
     const canvas = figure.querySelector("canvas");
@@ -469,22 +497,44 @@ export function paintAcsStrip(opts) {
     }
     const token = ++acsTokens[axis];
     figure.querySelectorAll(".acs-error").forEach((el) => el.remove());
-    Promise.all([
-      loadImage(opts.sliceUrl(axis, index)),
-      loadImage(opts.overlayUrl(axis, index)).catch(() => null),
-    ])
-      .then(([base, overlay]) => {
-        if (acsTokens[axis] !== token) return;
-        drawAcs(canvas, base, overlay, axis, indices, volume, opts);
-      })
-      .catch((error) => {
-        console.warn("ACS slice failed:", error);
-        if (acsTokens[axis] !== token) return;
-        const msg = document.createElement("div");
-        msg.className = "acs-error";
-        msg.textContent = `Could not load slice: ${error && error.message ? error.message : error}`;
-        figure.appendChild(msg);
-      });
+    const slice = opts.sliceUrl(axis, index);
+    const overlay = opts.overlayUrl(axis, index);
+    const paint = (attempt) => {
+      Promise.all([
+        loadImage(slice),
+        loadImage(overlay).catch(() => null),
+      ])
+        .then(([base, overlayImg]) => {
+          // Accept the latest paint for this axis, or recover if a stale token
+          // left the canvas at the blank HTML default (300×150).
+          const stale = acsTokens[axis] !== token;
+          const blank = canvas.width <= 300 && canvas.height <= 150 && !acsLayout.has(canvas);
+          if (stale && !blank) return;
+          try {
+            drawAcs(canvas, base, overlayImg, axis, indices, volume, opts);
+            if (typeof window !== "undefined") {
+              window.__acsPainted = acsStripIsPainted();
+            }
+          } catch (error) {
+            throw error;
+          }
+        })
+        .catch((error) => {
+          console.warn("ACS slice failed:", error);
+          if (acsTokens[axis] !== token && acsPaintGeneration !== generation) return;
+          if (attempt < 2) {
+            imageCache.delete(slice);
+            imageCache.delete(overlay);
+            window.setTimeout(() => paint(attempt + 1), 250 * (attempt + 1));
+            return;
+          }
+          const msg = document.createElement("div");
+          msg.className = "acs-error";
+          msg.textContent = `Could not load slice: ${error && error.message ? error.message : error}`;
+          figure.appendChild(msg);
+        });
+    };
+    paint(0);
   });
 }
 

@@ -175,7 +175,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "RoomEnvironment" in script
     assert "ACESFilmicToneMapping" in script
     assert "ShaderMaterial" in script
-    assert "pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewDir))), 2.5)" in script
+    assert "fresnel" in script and "normalize(vViewDir)" in script
     assert "TUMOR_LABELS" in script
     assert "preview" in script
     assert "MeshPhysicalMaterial" in script
@@ -185,7 +185,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert 'id="auto-rotate"' in html
     page = create_app().test_client().get("/viewer")
     assert page.status_code == 200
-    assert b"viewer.js?v=explorer3" in page.data
+    assert b"viewer.js?v=explorer4" in page.data
     assert b'id="job-progress"' in page.data
     assert b'id="anatomy-warning"' in page.data
     assert "Cortical grey matter (left)" in script
@@ -210,6 +210,7 @@ def test_viewer_page_has_groups_clipping_and_tract_note():
     assert "IBM Plex Sans" in css
     assert "slices view panel" in css and "--slices-width" in css
     assert "@media (max-width: 900px)" in css
+    assert "acsStripIsPainted" in explorer
 
     assert "setClearColor(0x0b0f17)" in script
     assert "orientNormals" in script

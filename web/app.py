@@ -38,7 +38,11 @@ _BUILDING: set[str] = set()
 _BUILDING_LOCK = threading.Lock()
 _JOBS: dict[str, object] = {}
 _JOBS_LOCK = threading.Lock()
+_VOLUME_CACHE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
+
+# Bump when viewer static assets change so deploys never serve stale JS/CSS.
+_STATIC_ASSET_VERSION = "explorer4"
 
 
 def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -> Flask:
@@ -48,6 +52,21 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
     app.config["VOLUMES"] = {}
     app.config["DEMO_PASSWORD"] = os.environ.get("DEMO_PASSWORD") or ""
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+    @app.after_request
+    def _cache_headers(response):
+        path = request.path or ""
+        if path.startswith("/static/"):
+            # Versioned viewer assets + GLBs must revalidate after every deploy.
+            if path.endswith((".js", ".css", ".mjs", ".map", ".glb", ".gltf")):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+            else:
+                response.headers.setdefault("Cache-Control", "public, max-age=3600")
+        elif path.endswith(".glb") or path.endswith("scene.glb"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     @app.before_request
     def _optional_basic_auth():
@@ -186,7 +205,9 @@ def create_app(outputs_dir: Path | None = None, cases_dir: Path | None = None) -
     @app.get("/api/cases/<case_id>/scene.glb")
     def scene_glb(case_id: str):
         path = _output_file(app, case_id, "scene.glb")
-        return send_file(path, mimetype="model/gltf-binary", max_age=0)
+        response = send_file(path, mimetype="model/gltf-binary", max_age=0)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     @app.get("/api/cases/<case_id>/volume")
     def volume_meta(case_id: str):
@@ -675,34 +696,51 @@ def _cached_volume(app: Flask, case_id: str, modality: str):
     suffix = resolve_sequence(modality)
     key = (case_id, suffix)
     cache = app.config["VOLUMES"]
-    if key not in cache:
+    with _VOLUME_CACHE_LOCK:
+        hit = cache.get(key)
+    if hit is not None:
+        return hit
+    # Load outside the lock so concurrent readers of other keys are not blocked
+    # on disk I/O; re-check under the lock before insert.
+    loaded = _read_volume(app, case_id, modality)
+    with _VOLUME_CACHE_LOCK:
+        existing = cache.get(key)
+        if existing is not None:
+            return existing
         # One active case at a time, and at most one MRI volume for that case.
         _evict_other_cases(cache, case_id)
-        for existing in list(cache):
+        for prior in list(cache):
             if (
-                isinstance(existing, tuple)
-                and len(existing) == 2
-                and existing[0] == case_id
-                and existing[1] in {"t2f", "t1n", "t1c", "t2w"}
-                and existing[1] != suffix
+                isinstance(prior, tuple)
+                and len(prior) == 2
+                and prior[0] == case_id
+                and prior[1] in {"t2f", "t1n", "t1c", "t2w"}
+                and prior[1] != suffix
             ):
-                cache.pop(existing, None)
-        cache[key] = _read_volume(app, case_id, modality)
-    return cache[key]
+                cache.pop(prior, None)
+        cache[key] = loaded
+        return loaded
 
 
 def _cached_pred(app: Flask, case_id: str):
     cache = app.config["VOLUMES"]
     key = (case_id, "pred")
-    if key not in cache:
+    with _VOLUME_CACHE_LOCK:
+        hit = cache.get(key)
+    if hit is not None:
+        return hit
+    path = _output_file(app, case_id, "pred_seg.nii.gz")
+    image = nib.as_closest_canonical(nib.load(str(path)))
+    data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
+    if data.ndim != 3:
+        raise ValueError("pred_seg is not a 3D volume")
+    with _VOLUME_CACHE_LOCK:
+        existing = cache.get(key)
+        if existing is not None:
+            return existing
         _evict_other_cases(cache, case_id)
-        path = _output_file(app, case_id, "pred_seg.nii.gz")
-        image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
-        if data.ndim != 3:
-            raise ValueError("pred_seg is not a 3D volume")
         cache[key] = data
-    return cache[key]
+        return data
 
 
 def _brain_mask(app: Flask, case_id: str, volume) -> np.ndarray:
@@ -932,31 +970,46 @@ def _find_second_mask(app: Flask, case_id: str) -> Path | None:
 def _cached_second_mask(app: Flask, case_id: str):
     cache = app.config["VOLUMES"]
     key = (case_id, "second")
-    if key not in cache:
+    with _VOLUME_CACHE_LOCK:
+        hit = cache.get(key)
+    if hit is not None:
+        return hit
+    path = _find_second_mask(app, case_id)
+    if path is None:
+        raise FileNotFoundError(f"No second mask for case {case_id}")
+    image = nib.as_closest_canonical(nib.load(str(path)))
+    data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
+    if data.ndim != 3:
+        raise ValueError("second mask is not a 3D volume")
+    with _VOLUME_CACHE_LOCK:
+        existing = cache.get(key)
+        if existing is not None:
+            return existing
         _evict_other_cases(cache, case_id)
-        path = _find_second_mask(app, case_id)
-        if path is None:
-            raise FileNotFoundError(f"No second mask for case {case_id}")
-        image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.rint(np.squeeze(np.asanyarray(image.dataobj))).astype(np.int16, copy=False)
-        if data.ndim != 3:
-            raise ValueError("second mask is not a 3D volume")
         cache[key] = data
-    return cache[key]
+        return data
 
 
 def _cached_wt_prob(app: Flask, case_id: str):
     cache = app.config["VOLUMES"]
     key = (case_id, "wt_prob")
-    if key not in cache:
+    with _VOLUME_CACHE_LOCK:
+        hit = cache.get(key)
+    if hit is not None:
+        return hit
+    path = _output_file(app, case_id, "wt_prob.nii.gz")
+    image = nib.as_closest_canonical(nib.load(str(path)))
+    data = np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))
+    if data.ndim != 3:
+        raise ValueError("wt_prob is not a 3D volume")
+    clipped = np.clip(data, 0.0, 1.0)
+    with _VOLUME_CACHE_LOCK:
+        existing = cache.get(key)
+        if existing is not None:
+            return existing
         _evict_other_cases(cache, case_id)
-        path = _output_file(app, case_id, "wt_prob.nii.gz")
-        image = nib.as_closest_canonical(nib.load(str(path)))
-        data = np.squeeze(np.asarray(image.get_fdata(dtype=np.float32)))
-        if data.ndim != 3:
-            raise ValueError("wt_prob is not a 3D volume")
-        cache[key] = np.clip(data, 0.0, 1.0)
-    return cache[key]
+        cache[key] = clipped
+        return clipped
 
 
 def _mask_dice(app: Flask, case_id: str) -> dict:

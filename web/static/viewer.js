@@ -15,6 +15,7 @@ import {
   loadExplorerData,
   onCanvasClick,
   paintAcsStrip,
+  acsStripIsPainted,
   renderTrustBadges,
   renderTumorLocation,
   setupShortcuts,
@@ -23,7 +24,7 @@ import {
   wireAcsStrip,
   wireReportLink,
   worldToVoxel,
-} from "./explorer-ui.js?v=explorer1";
+} from "./explorer-ui.js?v=explorer4";
 
 const AXIS_NAME = ["Sagittal", "Coronal", "Axial"];
 const TUMOR_ORDER = ["enhancing", "necrosis", "edema"];
@@ -568,7 +569,7 @@ async function startViewer(id) {
   let gltf;
   try {
     gltf = await new GLTFLoader().loadAsync(
-      `/api/cases/${encodeURIComponent(id)}/scene.glb?v=ui2`,
+      `/api/cases/${encodeURIComponent(id)}/scene.glb?v=explorer4`,
     );
   } catch (error) {
     showPanelState("#view-state", "error", `Could not load 3D scene: ${error.message || error}`, () => {
@@ -584,7 +585,10 @@ async function startViewer(id) {
     if (!object.isMesh) return;
     const name = structureName(object, manifest);
     if (!name) return;
+    if (!object.geometry.getAttribute("normal")) object.geometry.computeVertexNormals();
     orientNormals(object.geometry);
+    object.geometry.computeBoundingBox();
+    object.geometry.computeBoundingSphere();
     object.name = name;
     const entry = manifest.structures[name];
     const opacity = isGlass(name, entry) ? 0.7 : entry.color[3] / 255;
@@ -912,7 +916,43 @@ async function startViewer(id) {
   }
   applyPreset("glass-tumor", byName, camera, controls, gltf.scene);
   frameTumorView(camera, controls, byName);
-  window.__viewerReady = true;
+  window.__viewerDiagnostics = () => {
+    const meshes = [];
+    byName.forEach((mesh, name) => {
+      const box = mesh.geometry?.boundingBox;
+      const sphere = mesh.geometry?.boundingSphere;
+      const size = box ? box.getSize(new THREE.Vector3()) : null;
+      meshes.push({
+        name,
+        visible: mesh.visible,
+        glass: Boolean(mesh.userData.glass),
+        tris: mesh.geometry?.index ? mesh.geometry.index.count / 3 : (mesh.geometry?.attributes?.position?.count || 0) / 3,
+        size: size ? [size.x, size.y, size.z] : null,
+        radius: sphere ? sphere.radius : null,
+        degenerate: !sphere || !(sphere.radius > 1e-3) || !size || !(size.x + size.y + size.z > 1e-3),
+      });
+    });
+    return {
+      acsPainted: acsStripIsPainted(),
+      meshes,
+      degenerateVisible: meshes.filter((m) => m.visible && m.degenerate).map((m) => m.name),
+    };
+  };
+  const markReady = () => {
+    window.__acsPainted = acsStripIsPainted();
+    window.__viewerReady = true;
+  };
+  // ACS images often finish after the GLB; wait briefly so ready implies slices painted.
+  let waits = 0;
+  const waitAcs = () => {
+    if (acsStripIsPainted() || waits >= 40) {
+      markReady();
+      return;
+    }
+    waits += 1;
+    window.setTimeout(waitAcs, 100);
+  };
+  waitAcs();
 
   function refreshClips() {
     const active = [];
@@ -1159,6 +1199,8 @@ function orientNormals(geometry) {
 
 function glassMaterial(object, opacity, baseColor) {
   const hasColor = Boolean(object.geometry?.getAttribute("color"));
+  // Custom shaders must declare color when vertexColors is on; otherwise real
+  // Metal/ANGLE drivers can link a broken program and draw a single bright face.
   return new THREE.ShaderMaterial({
     uniforms: {
       baseColor: { value: (baseColor || GLASS_COLOR).clone() },
@@ -1167,7 +1209,11 @@ function glassMaterial(object, opacity, baseColor) {
       tintMix: { value: 0 },
     },
     vertexShader: `
+      #include <common>
       #include <clipping_planes_pars_vertex>
+      #ifdef USE_COLOR
+      attribute vec3 color;
+      #endif
       varying vec3 vNormal;
       varying vec3 vViewDir;
       varying vec3 vLobe;
@@ -1177,7 +1223,7 @@ function glassMaterial(object, opacity, baseColor) {
         vViewDir = normalize(-mvPosition.xyz);
         vLobe = vec3(1.0);
         #ifdef USE_COLOR
-        vLobe = color.rgb;
+        vLobe = color;
         #endif
         gl_Position = projectionMatrix * mvPosition;
         #include <clipping_planes_vertex>
@@ -1195,11 +1241,15 @@ function glassMaterial(object, opacity, baseColor) {
       varying vec3 vLobe;
       void main() {
         #include <clipping_planes_fragment>
-        float fresnel = pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewDir))), 2.5);
+        vec3 n = vNormal;
+        float nLen = length(n);
+        if (nLen < 1e-5) n = vec3(0.0, 0.0, 1.0);
+        else n /= nLen;
+        float fresnel = pow(1.0 - abs(dot(n, normalize(vViewDir))), 2.5);
         vec3 base = mix(baseColor, vLobe, tintMix);
-        vec3 color = base * fresnel * intensity;
-        float alpha = fresnel * opacity;
-        gl_FragColor = vec4(color, alpha);
+        vec3 rgb = base * fresnel * intensity;
+        float alpha = clamp(fresnel * opacity, 0.0, 1.0);
+        gl_FragColor = vec4(rgb, alpha);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }

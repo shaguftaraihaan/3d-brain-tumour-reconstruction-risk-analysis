@@ -1,0 +1,46 @@
+{
+  "info": {
+    "ready": true,
+    "viewerHidden": false,
+    "uploadHidden": true,
+    "acs": [
+      {
+        "w": 300,
+        "h": 150,
+        "nz": 0
+      },
+      {
+        "w": 300,
+        "h": 150,
+        "nz": 0
+      },
+      {
+        "w": 300,
+        "h": 150,
+        "nz": 0
+      }
+    ],
+    "samples": [
+      [
+        232,
+        234,
+        233,
+        255
+      ],
+      [
+        95,
+        147,
+        229,
+        255
+      ]
+    ],
+    "title": "BraTS20_Training_002"
+  },
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    }
+  ],
+  "bad": []
+}

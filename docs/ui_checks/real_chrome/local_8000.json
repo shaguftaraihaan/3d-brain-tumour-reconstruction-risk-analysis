@@ -1,0 +1,153 @@
+{
+  "info": {
+    "wrap": {
+      "x": 280,
+      "y": 30.3984375,
+      "w": 800,
+      "h": 869.6015625
+    },
+    "viewAttr": {
+      "width": 799,
+      "height": 870
+    },
+    "viewBox": {
+      "x": 280,
+      "y": 30.3984375,
+      "w": 799,
+      "h": 869.6015625
+    },
+    "slices": {
+      "x": 0,
+      "y": 30.3984375,
+      "w": 280,
+      "h": 869.6015625
+    },
+    "acs": [
+      {
+        "w": 288,
+        "h": 288,
+        "cssW": 257,
+        "cssH": 257,
+        "nz": 24849,
+        "mean": 54.43502756650167
+      },
+      {
+        "w": 288,
+        "h": 288,
+        "cssW": 257,
+        "cssH": 257,
+        "nz": 15071,
+        "mean": 87.50808395815363
+      },
+      {
+        "w": 288,
+        "h": 288,
+        "cssW": 257,
+        "cssH": 257,
+        "nz": 17627,
+        "mean": 61.45345209054292
+      }
+    ],
+    "gl": {
+      "w": 799,
+      "h": 870,
+      "samples": [
+        [
+          399,
+          435,
+          [
+            218,
+            229,
+            229,
+            255
+          ]
+        ],
+        [
+          279,
+          391,
+          [
+            153,
+            159,
+            166,
+            255
+          ]
+        ],
+        [
+          439,
+          435,
+          [
+            119,
+            140,
+            167,
+            255
+          ]
+        ]
+      ]
+    },
+    "ready": true,
+    "dpr": 1
+  },
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (NOT FOUND)"
+    },
+    {
+      "type": "warning",
+      "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+    },
+    {
+      "type": "warning",
+      "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+    },
+    {
+      "type": "warning",
+      "text": "Canvas2D: Multiple readback operations using getImageData are faster with the willReadFrequently attribute set to true. See: https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-will-read-frequently"
+    }
+  ],
+  "network_bad": [],
+  "slice_sizes": [
+    {
+      "url": "http://127.0.0.1:8000/api/cases/BraTS20_Training_002/slice?modality=flair&axis=1&index=119&lo=0.19424006342887878&hi=5.589391446113586",
+      "status": 200,
+      "ct": "image/png",
+      "size": 14621,
+      "note": "slice_ok"
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/cases/BraTS20_Training_002/slice?modality=flair&axis=2&index=77&lo=0.19424006342887878&hi=5.589391446113586",
+      "status": 200,
+      "ct": "image/png",
+      "size": 23943,
+      "note": "slice_ok"
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/cases/BraTS20_Training_002/slice?modality=flair&axis=0&index=119&lo=0.19424006342887878&hi=5.589391446113586",
+      "status": 200,
+      "ct": "image/png",
+      "size": 18508,
+      "note": "slice_ok"
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/cases/BraTS20_Training_002/slice?modality=t1c&axis=2&index=77&lo=0.5750004297494888&hi=5.690000982284539",
+      "status": 200,
+      "ct": "image/png",
+      "size": 22640,
+      "note": "slice_ok"
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/cases/BraTS20_Training_002/slice?modality=t2&axis=2&index=77&lo=0.41467341780662537&hi=6.080200381278986",
+      "status": 200,
+      "ct": "image/png",
+      "size": 24080,
+      "note": "slice_ok"
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/cases/BraTS20_Training_002/slice?modality=t1&axis=2&index=77&lo=0.47656702995300293&hi=5.477719306945801",
+      "status": 200,
+      "ct": "image/png",
+      "size": 21223,
+      "note": "slice_ok"
+    }
+  ]
+}

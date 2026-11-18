@@ -1,0 +1,84 @@
+{
+  "info": {
+    "wrap": {
+      "x": 280,
+      "y": 30.3984375,
+      "w": 800,
+      "h": 869.6015625
+    },
+    "slices": {
+      "x": 0,
+      "y": 30.3984375,
+      "w": 280,
+      "h": 869.6015625
+    },
+    "acs": [
+      {
+        "w": 288,
+        "h": 288,
+        "cssW": 257,
+        "nz": 24849
+      },
+      {
+        "w": 288,
+        "h": 288,
+        "cssW": 257,
+        "nz": 15071
+      },
+      {
+        "w": 288,
+        "h": 288,
+        "cssW": 257,
+        "nz": 17627
+      }
+    ],
+    "glInfo": {
+      "vendor": "Google Inc. (Apple)",
+      "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4, Unspecified Version)",
+      "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "w": 1598,
+      "h": 1740,
+      "samples": [
+        [
+          799,
+          870,
+          [
+            232,
+            234,
+            233,
+            255
+          ]
+        ],
+        [
+          479,
+          696,
+          [
+            51,
+            62,
+            80,
+            255
+          ]
+        ],
+        [
+          1118,
+          1044,
+          [
+            28,
+            37,
+            49,
+            255
+          ]
+        ]
+      ]
+    },
+    "dpr": 2,
+    "ready": true
+  },
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (NOT FOUND)"
+    }
+  ],
+  "bad": []
+}
