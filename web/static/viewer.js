@@ -3,6 +3,27 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { CSS2DObject, CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import {
+  DEFAULT_ROWS,
+  buildStructureIndex,
+  buildTourSteps,
+  cancelCameraAnimation,
+  contourCanvas,
+  contourOptionsFor,
+  createStructureExplorer,
+  createTour,
+  loadExplorerData,
+  onCanvasClick,
+  paintAcsStrip,
+  renderTrustBadges,
+  renderTumorLocation,
+  setupShortcuts,
+  setupUncertainty,
+  transitionWithCamera,
+  wireAcsStrip,
+  wireReportLink,
+  worldToVoxel,
+} from "./explorer-ui.js?v=explorer1";
 
 const AXIS_NAME = ["Sagittal", "Coronal", "Axial"];
 const TUMOR_ORDER = ["enhancing", "necrosis", "edema"];
@@ -39,6 +60,12 @@ const TISSUE_LABELS = {
 const DEEP_GROUPS = new Set(["Subcortical", "Ventricles"]);
 const GLASS_GROUPS = new Set(["Cortex", "Brainstem & Cerebellum"]);
 const GLASS_COLOR = new THREE.Color(0x9fb8d6);
+const VOLUME_FLOOR_ML = 20.9;
+const LOCATION_DEFAULT_ROWS = DEFAULT_ROWS;
+const GHOST_OPACITY = 0.08;
+
+// Which overlay the slice views / 3D cuts use: "model" | "second" | "prob".
+let uncertaintySource = "model";
 
 const params = new URLSearchParams(location.search);
 const caseId = params.get("case");
@@ -60,6 +87,7 @@ const REQUIRED_SCANS = SCAN_ORDER.filter((role) => SCAN_ROLES[role].required);
 const upload = { files: [], folder: null, caseId: null, skipped: 0, dicom: false };
 
 setupUpload();
+loadCasePicker();
 
 if (caseId) {
   uploadScreen.hidden = true;
@@ -70,7 +98,10 @@ if (caseId) {
     const slices = document.querySelector("#slices-panel");
     if (slices) slices.hidden = true;
   }
-  startViewer(caseId);
+  startViewer(caseId).catch((error) => {
+    console.error(error);
+    showPanelState("#view-state", "error", error.message || String(error), () => location.reload());
+  });
 }
 
 function setupUpload() {
@@ -368,13 +399,117 @@ function formatSeconds(value) {
   return minutes ? `${minutes}:${String(rest).padStart(2, "0")}` : `${seconds.toFixed(1)}s`;
 }
 
+async function loadCasePicker() {
+  const status = document.querySelector("#case-picker-status");
+  const list = document.querySelector("#case-list");
+  if (!status || !list) return;
+  try {
+    const payload = await fetch("/api/cases").then(readJson);
+    const cases = Array.isArray(payload.cases) ? payload.cases : [];
+    list.replaceChildren();
+    if (!cases.length) {
+      status.textContent = "No finished cases in outputs/ yet. Upload a scan below.";
+      return;
+    }
+    status.textContent = `${cases.length} case${cases.length === 1 ? "" : "s"} ready to open:`;
+    for (const id of cases) {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = id;
+      button.addEventListener("click", () => {
+        location.href = `/viewer?case=${encodeURIComponent(id)}`;
+      });
+      item.appendChild(button);
+      list.appendChild(item);
+    }
+  } catch (error) {
+    status.textContent = `Could not list cases: ${error.message || error}`;
+  }
+}
+
+function showPanelState(selector, mode, message, onRetry) {
+  const host = document.querySelector(selector);
+  if (!host) return;
+  host.hidden = false;
+  host.classList.toggle("is-loading", mode === "loading");
+  host.classList.toggle("is-error", mode === "error");
+  const text = host.querySelector(".state-message");
+  if (text) text.textContent = message;
+  const retry = host.querySelector(".retry");
+  if (retry) {
+    retry.hidden = mode !== "error" || !onRetry;
+    retry.onclick = onRetry || null;
+  }
+}
+
+function hidePanelState(selector) {
+  const host = document.querySelector(selector);
+  if (!host) return;
+  host.hidden = true;
+  host.classList.remove("is-loading", "is-error");
+}
+
+function tumorVolumesMl(manifest, location) {
+  const reported = location && location.volumes_ml;
+  if (reported && [reported.wt_ml, reported.tc_ml, reported.et_ml].every((value) => Number.isFinite(Number(value)))) {
+    return { wt: Number(reported.wt_ml), tc: Number(reported.tc_ml), et: Number(reported.et_ml) };
+  }
+  const structures = manifest?.structures || {};
+  const edema = Number(structures.edema?.volume_cm3) || 0;
+  const necrosis = Number(structures.necrosis?.volume_cm3) || 0;
+  const enhancing = Number(structures.enhancing?.volume_cm3) || 0;
+  // Exclusive BraTS labels: WT = ED+NCR+ET, TC = NCR+ET, ET = enhancing.
+  return {
+    wt: edema + necrosis + enhancing,
+    tc: necrosis + enhancing,
+    et: enhancing,
+  };
+}
+
+function buildVolumeCard(manifest, location) {
+  const vols = tumorVolumesMl(manifest, location);
+  const fmt = (value) => (value > 0 ? `${value.toFixed(1)} mL` : "—");
+  const wt = document.querySelector("#vol-wt");
+  const tc = document.querySelector("#vol-tc");
+  const et = document.querySelector("#vol-et");
+  if (wt) wt.textContent = fmt(vols.wt);
+  if (tc) tc.textContent = fmt(vols.tc);
+  if (et) et.textContent = fmt(vols.et);
+  const chip = document.querySelector("#volume-floor-chip");
+  if (chip) {
+    const floor = Number(location?.plausibility?.floor_ml) || VOLUME_FLOOR_ML;
+    const below = vols.wt > 0 && vols.wt < floor;
+    chip.hidden = !below;
+    chip.textContent = `Whole-tumor volume is below the ${floor} mL BraTS size floor`;
+  }
+}
+
 async function startViewer(id) {
-  const manifest = await fetch(`/api/cases/${encodeURIComponent(id)}/manifest.json?v=anatomy1`).then(readJson);
+  showPanelState("#view-state", "loading", "Loading 3D scene…");
+  showPanelState("#slice-state", "loading", "Loading slices…");
+  let manifest;
+  try {
+    manifest = await fetch(`/api/cases/${encodeURIComponent(id)}/manifest.json?v=ui2`).then(readJson);
+  } catch (error) {
+    showPanelState("#view-state", "error", `Could not load case data: ${error.message || error}`, () => {
+      startViewer(id);
+    });
+    showPanelState("#slice-state", "error", "Waiting for case data.", () => {
+      startViewer(id);
+    });
+    throw error;
+  }
   document.querySelector("#case-title").textContent = manifest.case_id || id;
   showAnatomyWarning(manifest);
+  // Location report + uncertainty availability; both are optional and never block the viewer.
+  const explorerData = await loadExplorerData(id);
+  renderTrustBadges(explorerData.location);
+  wireReportLink(id);
+  buildVolumeCard(manifest, explorerData.location);
   buildPanel(manifest);
   buildProximity(manifest);
-  buildTumorCard(manifest);
+  buildTumorCard(manifest, explorerData.location);
   buildPresetButtons();
 
   const canvas = document.querySelector("#view");
@@ -389,7 +524,8 @@ async function startViewer(id) {
   renderer.sortObjects = true;
   const labelRenderer = new CSS2DRenderer();
   labelRenderer.domElement.className = "label-layer";
-  viewerRoot.appendChild(labelRenderer.domElement);
+  const viewWrap = document.querySelector("#view-wrap") || viewerRoot;
+  viewWrap.appendChild(labelRenderer.domElement);
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0f17);
@@ -411,10 +547,19 @@ async function startViewer(id) {
   sliceMeshes.forEach((group) => scene.add(group));
   const gizmo = makeOrientationGizmo();
 
-  const gltf = await new GLTFLoader().loadAsync(
-    `/api/cases/${encodeURIComponent(id)}/scene.glb?v=slices3`,
-  );
+  let gltf;
+  try {
+    gltf = await new GLTFLoader().loadAsync(
+      `/api/cases/${encodeURIComponent(id)}/scene.glb?v=ui2`,
+    );
+  } catch (error) {
+    showPanelState("#view-state", "error", `Could not load 3D scene: ${error.message || error}`, () => {
+      startViewer(id);
+    });
+    throw error;
+  }
   scene.add(gltf.scene);
+  hidePanelState("#view-state");
   const pickable = [];
   const byName = new Map();
   gltf.scene.traverse((object) => {
@@ -441,7 +586,23 @@ async function startViewer(id) {
   });
   const labels = attachLabels(scene, byName, manifest);
 
-  let volume = await fetch(`/api/cases/${encodeURIComponent(id)}/volume?modality=flair`).then(readJson);
+  let volume;
+  try {
+    volume = await fetch(`/api/cases/${encodeURIComponent(id)}/volume?modality=flair`).then(readJson);
+    hidePanelState("#slice-state");
+  } catch (error) {
+    showPanelState("#slice-state", "error", `Could not load volume: ${error.message || error}`, async () => {
+      try {
+        showPanelState("#slice-state", "loading", "Loading slices…");
+        volume = await fetch(`/api/cases/${encodeURIComponent(id)}/volume?modality=flair`).then(readJson);
+        hidePanelState("#slice-state");
+        location.reload();
+      } catch (retryError) {
+        showPanelState("#slice-state", "error", `Could not load volume: ${retryError.message || retryError}`, null);
+      }
+    });
+    volume = { shape: [1, 1, 1], windows: {}, affine: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]], bbox: { lo: [0,0,0], hi: [0,0,0] }, letters: {} };
+  }
   const clipState = volume.shape.map((length, axis) => ({
     enabled: false,
     index: Math.floor((length - 1) / 2),
@@ -479,7 +640,17 @@ async function startViewer(id) {
     redrawSlices(volume, sliceView);
   };
   buildClipControls(volume, clipState, onClipChange);
-  wireSlicePanel(volume, clipState, sliceView, marker, () => refreshClips());
+  wireSlicePanel(volume, clipState, sliceView, marker, () => refreshClips(), (voxel) => linkToVoxel(voxel));
+  wireAcsStrip(() => volume, (voxel) => linkToVoxel(voxel));
+  setupUncertainty(explorerData.uncertainty, {
+    initial: uncertaintySource,
+    onChange: (source) => {
+      uncertaintySource = source;
+      overlayKey = "";
+      refreshClips();
+      redrawSlices(volume, sliceView);
+    },
+  });
   redrawSlices(volume, sliceView);
 
   document.querySelector("#modality").addEventListener("change", async (event) => {
@@ -520,9 +691,183 @@ async function startViewer(id) {
     hoveredName = null;
     tooltip.hidden = true;
   });
+  // Linked views: a click (not an orbit drag) on the 3D canvas sets the crosshair everywhere.
+  onCanvasClick(canvas, (event) => {
+    const rect = canvas.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const targets = [
+      ...pickable.filter((mesh) => mesh.visible),
+      ...sliceMeshes.filter((group) => group.visible).map((group) => group.userData.mri),
+    ];
+    // Ignore surface points that an active clip plane has cut away.
+    const kept = (point) => planes.every((plane, axis) => !clipState[axis].enabled || plane.distanceToPoint(point) >= -0.75);
+    const hits = raycaster.intersectObjects(targets, false).filter((hit) => kept(hit.point));
+    // Prefer solid structures/slices over the glass shells in front of them.
+    const hit = hits.find((item) => !item.object.userData.glass) || hits[0];
+    if (!hit) return;
+    const voxel = worldToVoxel(volume.affine, hit.point, volume.shape);
+    if (!voxel) return;
+    linkToVoxel(voxel);
+    if (pickable.includes(hit.object)) explorer.select(hit.object.name, { apply: false });
+  });
+
+  const ghostSaved = new Map();
+  const restoreGhost = () => {
+    ghostSaved.forEach((saved, name) => {
+      const mesh = byName.get(name);
+      if (!mesh) return;
+      const material = mesh.material;
+      if (material.uniforms && material.uniforms.opacity) {
+        material.uniforms.opacity.value = saved.opacity;
+      } else {
+        material.opacity = saved.opacity;
+        material.transparent = saved.transparent;
+        material.depthWrite = saved.depthWrite;
+        material.needsUpdate = true;
+      }
+      mesh.visible = saved.visible;
+    });
+    ghostSaved.clear();
+  };
+  const clearPresetActive = () => {
+    document.querySelectorAll("[data-preset]").forEach((button) => button.classList.remove("is-active"));
+  };
+  const resolveStructure = (label) => {
+    if (byName.has(label)) return label;
+    for (const [name] of byName) {
+      if (manifest.structures[name]?.full_name === label) return name;
+    }
+    return null;
+  };
+  const applyStructureMode = (name, mode) => {
+    const mesh = byName.get(name);
+    if (!mesh) return;
+    restoreGhost();
+    transitionWithCamera(camera, controls, () => {
+      if (mode === "isolate") {
+        isolateStructure(name, byName, camera, controls);
+      } else if (mode === "ghost") {
+        byName.forEach((other, otherName) => {
+          if (otherName === name) {
+            other.visible = true;
+            return;
+          }
+          const hiddenByDefault = other.userData.entry?.hidden_by_default === true;
+          const material = other.material;
+          const shader = Boolean(material.uniforms && material.uniforms.opacity);
+          ghostSaved.set(otherName, {
+            visible: other.visible,
+            opacity: shader ? material.uniforms.opacity.value : material.opacity,
+            transparent: material.transparent,
+            depthWrite: material.depthWrite,
+          });
+          other.visible = !hiddenByDefault;
+          if (shader) {
+            material.uniforms.opacity.value *= 0.3;
+          } else {
+            material.transparent = true;
+            material.depthWrite = false;
+            material.opacity = GHOST_OPACITY;
+            material.needsUpdate = true;
+          }
+        });
+        frameCamera(camera, controls, mesh);
+      } else {
+        byName.forEach((other, otherName) => {
+          other.visible = otherName === name || other.userData.glass || other.userData.group === "Tumor";
+        });
+        frameObjects(camera, controls, [mesh, ...meshesInGroup(byName, "Tumor")]);
+      }
+      clearPresetActive();
+      syncLegend(byName);
+    });
+  };
+  const showAllStructures = () => {
+    restoreGhost();
+    transitionWithCamera(camera, controls, () => applyPreset("anatomy", byName, camera, controls, gltf.scene));
+  };
+  const resetStructures = () => {
+    restoreGhost();
+    transitionWithCamera(camera, controls, () => applyPreset("glass-tumor", byName, camera, controls, gltf.scene));
+  };
+  const explorer = createStructureExplorer({
+    index: buildStructureIndex(manifest, byName.keys(), structureLabel),
+    manifest,
+    getLocation: () => explorerData.location,
+    labelOf: structureLabel,
+    onMode: applyStructureMode,
+    onClear: resetStructures,
+    onShowAll: showAllStructures,
+  });
+
+  let suppressExitReset = false;
+  const tour = createTour({
+    getSteps: () => buildTourSteps({ location: explorerData.location, manifest, volume }),
+    onStep: (step) => {
+      restoreGhost();
+      transitionWithCamera(
+        camera,
+        controls,
+        () => {
+          applyPreset(step.preset, byName, camera, controls, gltf.scene);
+          if (step.id === "brain") {
+            byName.forEach((mesh) => {
+              if (mesh.userData.group === "Tumor") mesh.visible = false;
+            });
+          } else if (step.id === "nearest") {
+            const nearby = (step.nearestNames || []).map(resolveStructure).filter(Boolean);
+            if (nearby.length) {
+              byName.forEach((mesh, name) => {
+                mesh.visible = nearby.includes(name) || Boolean(mesh.userData.glass) || mesh.userData.group === "Tumor";
+              });
+              frameObjects(camera, controls, [
+                ...meshesInGroup(byName, "Tumor"),
+                ...nearby.map((name) => byName.get(name)),
+              ]);
+            }
+          }
+          syncLegend(byName);
+        },
+        { ms: 1200 },
+      );
+    },
+    onExit: () => {
+      if (!suppressExitReset) resetStructures();
+    },
+  });
+  setupShortcuts({ tour, explorer });
+
+  function linkToVoxel(voxel) {
+    if (!voxel || !volume.shape || volume.shape.some((length) => length < 1)) return;
+    sliceView.crosshair = voxel;
+    placeMarker(marker, volume, voxel);
+    clipState.forEach((state, axis) => {
+      state.index = voxel[axis];
+    });
+    sliceView.index = voxel[sliceView.axis];
+    const slider = document.querySelector("#slice-index");
+    const readout = document.querySelector("#slice-index-readout");
+    if (slider) {
+      slider.max = String(volume.shape[sliceView.axis] - 1);
+      slider.value = String(sliceView.index);
+    }
+    if (readout) readout.textContent = String(sliceView.index);
+    applySliceToClip(clipState, sliceView, false);
+    refreshClips();
+    redrawSlices(volume, sliceView);
+  }
 
   wireLegend(byName, camera, controls);
-  wirePresets(byName, camera, controls, gltf.scene);
+  wirePresets(byName, camera, controls, gltf.scene, () => {
+    // A manual preset wins over a running tour / camera glide.
+    suppressExitReset = true;
+    tour.stop();
+    suppressExitReset = false;
+    cancelCameraAnimation();
+    restoreGhost();
+  });
   document.querySelector("#screenshot").addEventListener("click", () => {
     saveScreenshot(renderer, labelRenderer, scene, camera, byName, manifest);
   });
@@ -673,38 +1018,24 @@ function buildPresetButtons() {
   }
 }
 
-function buildTumorCard(manifest) {
-  const host = document.querySelector("#tumor-location");
-  const summary = manifest.tumor_location;
-  if (!summary) {
-    host.textContent = "No tumor location summary.";
-    return;
-  }
-  host.replaceChildren();
-  const note = document.createElement("p");
-  note.textContent = `Overlaps, or within ${Number(summary.margin_mm || 10).toFixed(0)} mm.`;
-  host.appendChild(note);
-  for (const region of ["WT", "ET"]) {
-    const block = document.createElement("div");
-    block.className = "location-region";
-    const heading = document.createElement("h3");
-    heading.textContent = region === "WT" ? "Whole tumor" : "Enhancing tumor";
-    const list = document.createElement("ul");
-    const rows = summary[region] || [];
-    if (!rows.length) {
-      const item = document.createElement("li");
-      item.textContent = "None within range.";
-      list.appendChild(item);
-    }
-    for (const row of rows) {
-      const item = document.createElement("li");
-      const where = row.relation === "overlaps" ? "overlaps" : `${Number(row.distance_mm).toFixed(1)} mm`;
-      item.textContent = `${row.name} — ${where}`;
-      list.appendChild(item);
-    }
-    block.append(heading, list);
-    host.appendChild(block);
-  }
+function buildTumorCard(manifest, location) {
+  const summary = manifest.tumor_location || location?.tumor_location || null;
+  const withheld = Boolean(location?.withheld);
+  const regions = {
+    WT: summary?.WT?.length ? summary.WT : location?.nearest || [],
+    ET: summary?.ET || [],
+  };
+  renderTumorLocation(
+    {
+      withheld,
+      reason: location?.withheld_reason,
+      headline: location?.headline,
+      regions,
+      marginMm: summary?.margin_mm ?? 10,
+      hasSummary: Boolean(summary || location),
+    },
+    LOCATION_DEFAULT_ROWS,
+  );
   const blood = document.querySelector("#blood-note");
   if (blood) {
     const note = manifest.blood_products_note || (manifest.structures && manifest.structures[BLOOD_NAME]?.note);
@@ -934,9 +1265,12 @@ function wireLegend(byName, camera, controls) {
   syncLegend(byName);
 }
 
-function wirePresets(byName, camera, controls, root) {
+function wirePresets(byName, camera, controls, root, before) {
   document.querySelectorAll("[data-preset]").forEach((button) => {
-    button.addEventListener("click", () => applyPreset(button.dataset.preset, byName, camera, controls, root));
+    button.addEventListener("click", () => {
+      if (before) before();
+      applyPreset(button.dataset.preset, byName, camera, controls, root);
+    });
   });
 }
 
@@ -1234,7 +1568,9 @@ function legendPixelHeight(scale) {
 }
 
 function tumorCardLines() {
-  return (document.querySelector("#tumor-location").innerText || "")
+  const summary = document.querySelector("#tumor-summary-line");
+  return [summary ? summary.innerText : "", document.querySelector("#tumor-location").innerText || ""]
+    .join("\n")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -1533,7 +1869,7 @@ function sliceUrl(modality, axis, index, sliceView) {
 }
 
 function overlayUrl(axis, index) {
-  return `/api/cases/${encodeURIComponent(caseId)}/overlay?axis=${axis}&index=${index}`;
+  return `/api/cases/${encodeURIComponent(caseId)}/overlay?source=${encodeURIComponent(uncertaintySource)}&axis=${axis}&index=${index}`;
 }
 
 function makeCrosshairMarker() {
@@ -1547,7 +1883,7 @@ function makeCrosshairMarker() {
   return group;
 }
 
-function wireSlicePanel(volume, clipState, sliceView, marker, onChange) {
+function wireSlicePanel(volume, clipState, sliceView, marker, onChange, onPick) {
   const panel = document.querySelector("#slices-panel");
   if (!panel) return;
   const slider = document.querySelector("#slice-index");
@@ -1592,6 +1928,10 @@ function wireSlicePanel(volume, clipState, sliceView, marker, onChange) {
     if (!canvas) return;
     const voxel = canvasToVoxel(canvas, event, volume, sliceView);
     if (!voxel) return;
+    if (onPick) {
+      onPick(voxel);
+      return;
+    }
     sliceView.crosshair = voxel;
     placeMarker(marker, volume, voxel);
     redrawSlices(volume, sliceView);
@@ -1660,12 +2000,21 @@ function wireWindowLevel(volume, clipState, sliceView, onChange) {
 const sliceImages = {};
 let overlayImage = null;
 let overlayKey = "";
+let overlayRequest = 0;
 
 function redrawSlices(volume, sliceView) {
   const axis = sliceView.axis;
   const index = sliceView.index;
-  const key = `${axis}:${index}`;
+  const key = `${uncertaintySource}:${axis}:${index}`;
   updateOrientLetters(volume, sliceView);
+  paintAcsStrip({
+    volume,
+    crosshair: sliceView.crosshair,
+    sliceUrl: (acsAxis, acsIndex) => sliceUrl("flair", acsAxis, acsIndex, sliceView),
+    overlayUrl,
+    overlayOpacity: sliceView.overlayOpacity,
+    source: uncertaintySource,
+  });
   SLICE_SEQS.forEach((seq) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -1678,10 +2027,18 @@ function redrawSlices(volume, sliceView) {
   });
   if (overlayKey !== key) {
     overlayKey = key;
+    const request = ++overlayRequest;
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
+      if (request !== overlayRequest) return;
       overlayImage = img;
+      SLICE_SEQS.forEach((seq) => paintSliceCanvas(seq, volume, sliceView));
+    };
+    img.onerror = () => {
+      // e.g. no probability map for this case: show the slices without an overlay.
+      if (request !== overlayRequest) return;
+      overlayImage = null;
       SLICE_SEQS.forEach((seq) => paintSliceCanvas(seq, volume, sliceView));
     };
     img.src = overlayUrl(axis, index);
@@ -1708,6 +2065,10 @@ function paintSliceCanvas(seq, volume, sliceView) {
     ctx.globalAlpha = sliceView.overlayOpacity;
     ctx.drawImage(overlayImage, 0, 0, canvas.width, canvas.height);
     ctx.restore();
+  }
+  if (overlayImage) {
+    // Crisp whole-tumor outline traced from the overlay alpha, independent of overlay opacity.
+    ctx.drawImage(contourCanvas(overlayImage, contourOptionsFor(uncertaintySource)), 0, 0, canvas.width, canvas.height);
   }
   if (sliceView.crosshair) {
     const pt = voxelToCanvas(sliceView.crosshair, volume, sliceView, canvas);

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tumor in context: a brain MRI research viewer</title>
+  <meta name="description" content="Upload four MRI sequences and see the tumor in 3D with its volume, location and how far each number can be trusted. A research prototype.">
+  <link rel="stylesheet" href="/static/landing.css">
+  <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js"}}</script>
+</head>
+<body class="intro-on">
+  <div class="intro" aria-hidden="true"><span class="intro-word">Tumor in context</span><div class="intro-line"></div></div>
+  <header class="nav" id="top">
+    <a class="brand" href="#top" aria-label="Tumor in context, home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>Tumor in context</span>
+    </a>
+    <nav aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#limits">Limits</a>
+      <a class="btn btn-small" href="/viewer">Open the viewer</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Brain tumor MRI &middot; research prototype</p>
+        <h1>See the tumor <em>in the context</em> of the brain.</h1>
+        <p class="lede">Add four MRI sequences. Get a 3D model of the tumor, its volume in millilitres, where it sits, and an honest note on how far each number can be trusted.</p>
+        <div class="cta-row">
+          <a class="btn" href="/viewer">Open the viewer</a>
+          <a class="btn btn-ghost" href="#how">See how it works</a>
+        </div>
+      </div>
+      <div class="hero-stage">
+        <div id="brain" role="img" aria-label="A slowly turning artificial 3D brain with an illustrative glowing tumor."></div>
+        <p class="stage-cap">Illustrative artificial model, generated in code. Not patient data. Move the mouse to tilt.</p>
+      </div>
+    </section>
+
+    <section class="shot">
+      <figure class="hero-shot">
+        <img src="/static/img/hero.png" width="1080" height="868" loading="lazy" alt="The viewer: a glass 3D brain with the tumor regions inside it, above three MRI slice views with the tumor outlined.">
+        <figcaption>Inside the viewer: the 3D brain above the axial, coronal and sagittal MRI slices, with the tumor outlined on each.</figcaption>
+      </figure>
+    </section>
+
+    <section class="stats" aria-label="At a glance">
+      <div><strong>4</strong><span>MRI sequences read: FLAIR, T1, T1 with contrast, T2</span></div>
+      <div><strong>3</strong><span>tumor regions outlined: necrosis, swelling, enhancing</span></div>
+      <div><strong>mL</strong><span>volume for each region, with a size sanity check</span></div>
+      <div><strong>QC</strong><span>every location claim is checked, or withheld</span></div>
+    </section>
+
+    <section class="section" id="features">
+      <h2>Built to be explored, and to be questioned</h2>
+      <p class="section-lede">The viewer shows one scan at a time, in 3D and on the original MRI, side by side.</p>
+      <div class="grid">
+        <article class="card">
+          <h3>3D and slices, linked</h3>
+          <p>Click a point on the 3D model and the axial, coronal and sagittal slices jump to it. The tumor outline follows on every slice.</p>
+        </article>
+        <article class="card">
+          <h3>A guided tour</h3>
+          <p>A short flythrough takes you from the raw sequences to the segmented tumor, its volume and its neighbours, with captions written from the case's own numbers.</p>
+        </article>
+        <article class="card">
+          <h3>Structure explorer</h3>
+          <p>Search for a structure, isolate it, fade the rest, and see how far it is from the tumor. Keyboard shortcuts keep it quick.</p>
+        </article>
+        <article class="card">
+          <h3>An uncertainty view</h3>
+          <p>Switch from the mask to the model's probability map. Soft edges show where the model hesitates, instead of hiding it behind one sharp outline.</p>
+        </article>
+        <article class="card">
+          <h3>Trust badges</h3>
+          <p>Registration quality, a size check against known tumors and an "unverified" label stay on screen. When the atlas does not line up, the location is withheld.</p>
+        </article>
+        <article class="card">
+          <h3>A one-page report</h3>
+          <p>Download the volumes, the key views and the caveats on a single page you can share.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section alt" id="how">
+      <h2>From scan to answer in five steps</h2>
+      <ol class="steps">
+        <li><span class="num">1</span><div><h3>Read the scan</h3><p>The four sequences are recognised from their file names, so you do not need to say which is which.</p></div></li>
+        <li><span class="num">2</span><div><h3>Remove the skull</h3><p>HD-BET isolates the brain so the model only sees brain tissue.</p></div></li>
+        <li><span class="num">3</span><div><h3>Segment the tumor</h3><p>A 3D neural network trained on the public BraTS dataset outlines the tumor regions.</p></div></li>
+        <li><span class="num">4</span><div><h3>Measure</h3><p>Volumes are computed in millilitres and checked against the smallest tumor in the training data.</p></div></li>
+        <li><span class="num">5</span><div><h3>Locate, if it can be trusted</h3><p>The brain is matched to a standard atlas. If the match is poor, the viewer says so and does not guess.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="section" id="limits">
+      <h2>What this is not</h2>
+      <div class="limits">
+        <p><strong>Not a diagnosis.</strong> It is a student research prototype and must not be used to make medical decisions.</p>
+        <p><strong>Tested on BraTS, not on patients.</strong> Accuracy is measured on public BraTS cases that have expert outlines. On real scans without expert outlines, every result is a model estimate and is marked unverified.</p>
+        <p><strong>Location can be withheld.</strong> A poor atlas match, a tiny volume or a fragmented tumor all stop the viewer from naming a lobe.</p>
+      </div>
+      <div class="cta-row center">
+        <a class="btn" href="/viewer">Open the viewer</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Capstone project &middot; Vellore Institute of Technology (Andhra Pradesh)</p>
+    <p class="small">Built with MONAI, HD-BET, three.js and nilearn. Data and atlases: BraTS, MNI152 / ICBM and Harvard-Oxford, used for academic research and cited in the project report.</p>
+  </footer>
+  <script type="module" src="/static/hero.js"></script>
+</body>
+</html>
